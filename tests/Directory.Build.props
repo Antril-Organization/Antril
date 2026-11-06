@@ -1,0 +1,5 @@
+<Project>
+  <!-- The repository's settings (LarvaRoot), then the test settings and helpers Larva's tests share (xUnit v3). -->
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)..'))" />
+  <Import Project="$(LarvaRoot)tests\TestProject.props" />
+</Project>

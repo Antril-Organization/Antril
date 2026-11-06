@@ -1,0 +1,134 @@
+{
+  "name": "antril",
+  "displayName": "Antril",
+  "description": "The Antril language for Larva: syntax highlighting, snippets, file icons and semantic colors for .ant files. Errors as you type, completion, navigation and the Run / Build commands come from the Larva extension (installed with it) and Antril's Larva language pack.",
+  "version": "0.9.0",
+  "publisher": "antril",
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Snippets"
+  ],
+  "keywords": [
+    "antril",
+    "ant"
+  ],
+  "main": "./extension.js",
+  "larva": {
+    "languages": [
+      "antril"
+    ]
+  },
+  "extensionDependencies": [
+    "larva.larva"
+  ],
+  "activationEvents": [
+    "onLanguage:antril"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "antril",
+        "aliases": [
+          "Antril",
+          "antril"
+        ],
+        "extensions": [
+          ".ant"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./images/ant-file.svg",
+          "dark": "./images/ant-file.svg"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "antril",
+        "scopeName": "source.antril",
+        "path": "./syntaxes/antril.tmLanguage.json"
+      },
+      {
+        "scopeName": "antril.queen-expressions",
+        "path": "./syntaxes/antril-in-queen.tmLanguage.json",
+        "injectTo": [
+          "source.queen"
+        ]
+      }
+    ],
+    "snippets": [
+      {
+        "language": "antril",
+        "path": "./snippets/antril.json"
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "antril",
+        "scopes": {
+          "class.defaultLibrary": [
+            "support.class.antril"
+          ],
+          "struct.defaultLibrary": [
+            "support.type.antril"
+          ],
+          "interface.defaultLibrary": [
+            "support.type.antril"
+          ],
+          "enum.defaultLibrary": [
+            "support.type.antril"
+          ],
+          "type": [
+            "storage.type.primitive.antril"
+          ],
+          "namespace": [
+            "entity.name.namespace.antril"
+          ],
+          "method.static": [
+            "entity.name.function.static.antril"
+          ],
+          "enumMember": [
+            "variable.other.enummember.antril"
+          ],
+          "keyword": [
+            "storage.modifier.constraint.antril"
+          ],
+          "field": [
+            "variable.other.property.field.antril"
+          ],
+          "exception": [
+            "entity.name.type.class.exception.antril"
+          ],
+          "attribute": [
+            "entity.name.type.class.attribute.antril"
+          ],
+          "bitflags": [
+            "entity.name.type.enum.bitflags.antril"
+          ],
+          "variable.readonly": [
+            "variable.other.constant.antril"
+          ],
+          "event": [
+            "variable.other.event.antril"
+          ]
+        }
+      }
+    ],
+    "configurationDefaults": {
+      "[antril]": {
+        "editor.semanticHighlighting.enabled": true
+      }
+    }
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.2.1"
+  },
+  "scripts": {
+    "package": "vsce package --allow-missing-repository --skip-license"
+  },
+  "icon": "images/antril.png"
+}

@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Antril end to end: its frontend, the standard library written in it, its editor services, its language pack loaded by
+       larva (larva build, larva lsp, larva bind with a profile), and Antril programs run on every Larva back end. -->
+
+  <PropertyGroup>
+    <!-- A child process's standard error is read while its output is: waiting for that read in a test is intended. -->
+    <NoWarn>$(NoWarn);xUnit1031</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Antril\Antril.csproj" />
+    <ProjectReference Include="$(LarvaRoot)Larva.IL\Larva.IL.csproj" />
+    <ProjectReference Include="$(LarvaRoot)Larva.IR\Larva.IR.csproj" />
+    <ProjectReference Include="$(LarvaRoot)Larva.Runtime\Larva.Runtime.csproj" />
+    <ProjectReference Include="$(LarvaRoot)Larva.Native\Larva.Native.csproj" />
+    <ProjectReference Include="$(LarvaRoot)Larva.Llvm\Larva.Llvm.csproj" />
+    <ProjectReference Include="$(LarvaRoot)Larva.X64\Larva.X64.csproj" />
+    <ProjectReference Include="$(LarvaRoot)Larva.Wasm\Larva.Wasm.csproj" />
+    <ProjectReference Include="$(LarvaRoot)Larva.Driver\Larva.Driver.csproj" />
+    <ProjectReference Include="$(LarvaRoot)Larva.Hir\Larva.Hir.csproj" />
+    <ProjectReference Include="$(LarvaRoot)Larva.Hir.Services\Larva.Hir.Services.csproj" />
+    <ProjectReference Include="$(LarvaRoot)Larva.Hir.Lowering\Larva.Hir.Lowering.csproj" />
+    <ProjectReference Include="$(LarvaRoot)Larva.Build\Larva.Build.csproj" />
+    <ProjectReference Include="$(LarvaRoot)Larva.Bindings\Larva.Bindings.csproj" />
+    <ProjectReference Include="$(LarvaRoot)Hive.Core\Hive.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The larva command line the tests run (built first, not referenced). -->
+    <ProjectReference Include="$(LarvaRoot)Larva.Cli\Larva.Cli.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Where the tests find Larva's working copy (its standard library sources, its larva command line). -->
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>LarvaRoot</_Parameter1>
+      <_Parameter2>$([System.IO.Path]::GetFullPath('$(LarvaRoot)'))</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AntrilRoot</_Parameter1>
+      <_Parameter2>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..'))</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>Configuration</_Parameter1>
+      <_Parameter2>$(Configuration)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+</Project>

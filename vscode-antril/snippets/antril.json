@@ -1,0 +1,252 @@
+{
+  "Main": {
+    "prefix": "main",
+    "body": [
+      "import System;",
+      "",
+      "Main() : i32",
+      "{",
+      "\t$0",
+      "\treturn 0;",
+      "}"
+    ],
+    "description": "A program's entry point"
+  },
+  "Function": {
+    "prefix": "fn",
+    "body": [
+      "${1:Name}(${2}) : ${3:i32}",
+      "{",
+      "\t$0",
+      "}"
+    ],
+    "description": "A function"
+  },
+  "Class": {
+    "prefix": "class",
+    "body": [
+      "class ${1:Name}",
+      "{",
+      "public:",
+      "\tnew(${2}) { $3 }",
+      "\t$0",
+      "}"
+    ],
+    "description": "A class"
+  },
+  "Value": {
+    "prefix": "value",
+    "body": [
+      "value ${1:Name}",
+      "{",
+      "public:",
+      "\t${2:i32} ${3:field};",
+      "\t$0",
+      "}"
+    ],
+    "description": "A value type"
+  },
+  "Interface": {
+    "prefix": "interface",
+    "body": [
+      "interface ${1:IName}",
+      "{",
+      "\t${2:Method}() : ${3:i32};$0",
+      "}"
+    ],
+    "description": "An interface"
+  },
+  "Enum": {
+    "prefix": "enum",
+    "body": [
+      "enum ${1:Name}",
+      "{",
+      "\t${2:First},",
+      "\t${3:Second}$0",
+      "}"
+    ],
+    "description": "An enum"
+  },
+  "Property": {
+    "prefix": "prop",
+    "body": [
+      "${1:i32} ${2:Name} { get => ${3:field}; set => ${3:field} = value; }"
+    ],
+    "description": "A property"
+  },
+  "Namespace": {
+    "prefix": "into",
+    "body": [
+      "into namespace ${1:Name}",
+      "{",
+      "\t$0",
+      "}"
+    ],
+    "description": "Declarations in a namespace"
+  },
+  "If": {
+    "prefix": "if",
+    "body": [
+      "if (${1:condition})",
+      "{",
+      "\t$0",
+      "}"
+    ],
+    "description": "if"
+  },
+  "If else": {
+    "prefix": "ifelse",
+    "body": [
+      "if (${1:condition})",
+      "{",
+      "\t$2",
+      "}",
+      "else",
+      "{",
+      "\t$0",
+      "}"
+    ],
+    "description": "if / else"
+  },
+  "Loop over a range": {
+    "prefix": "for",
+    "body": [
+      "loop (i32 ${1:i} = ${2:0}..${3:n})",
+      "{",
+      "\t$0",
+      "}"
+    ],
+    "description": "loop (i32 i = 0..n)"
+  },
+  "Loop over items": {
+    "prefix": "foreach",
+    "body": [
+      "loop (${1:i32} ${2:item} in ${3:items})",
+      "{",
+      "\t$0",
+      "}"
+    ],
+    "description": "loop (T x in items)"
+  },
+  "Loop while": {
+    "prefix": "while",
+    "body": [
+      "loop (${1:condition})",
+      "{",
+      "\t$0",
+      "}"
+    ],
+    "description": "loop (condition)"
+  },
+  "Switch": {
+    "prefix": "switch",
+    "body": [
+      "switch (${1:value})",
+      "{",
+      "\t${2:pattern} => $0,",
+      "\t_ => ,",
+      "}"
+    ],
+    "description": "switch with patterns"
+  },
+  "Try": {
+    "prefix": "try",
+    "body": [
+      "try",
+      "{",
+      "\t$1",
+      "}",
+      "catch (${2:i32} ${3:e})",
+      "{",
+      "\t$0",
+      "}"
+    ],
+    "description": "try / catch"
+  },
+  "Print": {
+    "prefix": "print",
+    "body": [
+      "Console.PrintLine($0);"
+    ],
+    "description": "Console.PrintLine"
+  },
+  "Unsafe": {
+    "prefix": "unsafe",
+    "body": [
+      "unsafe",
+      "{",
+      "\t$0",
+      "}"
+    ],
+    "description": "A block that may use pointers"
+  },
+  "Import from C": {
+    "prefix": "import-c",
+    "body": [
+      "[Import(\"${1:kernel32.dll}\")] ${2:Name}(${3}) : ${4:i32};"
+    ],
+    "description": "Calls a C function (P/Invoke)"
+  },
+  "Extension block": {
+    "prefix": "ext",
+    "body": [
+      "ext(${1:i32} ${2:n})",
+      "{",
+      "\t${3:Twice}() : ${1:i32} => ${2:n} * 2;",
+      "}"
+    ],
+    "description": "An extension block: methods added to a type (ext(i32 n) { … })"
+  },
+  "Static extension block": {
+    "prefix": "ext-static",
+    "body": [
+      "static ext(${1:i32})",
+      "{",
+      "\t${2:Parse}(str text) : ${1:i32} => ${1:i32}.Parse(text);",
+      "}"
+    ],
+    "description": "Static methods added to a type (static ext(i32) { … })"
+  },
+  "C struct": {
+    "prefix": "cstruct",
+    "body": [
+      "/// C struct ${1:NAME}: its fields in C's layout (passed to C by pointer: `&value`).",
+      "value ${1:NAME}",
+      "{",
+      "\tpublic:",
+      "\t\t${2:u32} ${3:field};",
+      "\t\t$0",
+      "}"
+    ],
+    "description": "A value type laid out as a C struct (sequential, natural alignment), for [Import] functions taking NAME*"
+  },
+  "C union": {
+    "prefix": "cunion",
+    "body": [
+      "/// C union ${1:NAME}: its members share the same bytes.",
+      "[ValueLayout(Layout.Explicit)]",
+      "value ${1:NAME}",
+      "{",
+      "\tpublic:",
+      "\t\t[FieldOffset(0)] ${2:i64} ${3:whole};",
+      "\t\t[FieldOffset(0)] ${4:f64} ${5:real};",
+      "\t\t$0",
+      "}"
+    ],
+    "description": "A value laid out as a C union: every member at offset 0 (needs `import System.Runtime.InteropServices;`)"
+  },
+  "C packed struct": {
+    "prefix": "cpacked",
+    "body": [
+      "/// C struct ${1:NAME} under `#pragma pack(${2:1})`.",
+      "[ValueLayout(Layout.Sequential, Pack = ${2:1})]",
+      "value ${1:NAME}",
+      "{",
+      "\tpublic:",
+      "\t\t${3:u8} ${4:tag};",
+      "\t\t$0",
+      "}"
+    ],
+    "description": "A value laid out as a packed C struct (needs `import System.Runtime.InteropServices;`)"
+  }
+}

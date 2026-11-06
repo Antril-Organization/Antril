@@ -1,0 +1,5 @@
+# What the .vsix leaves out.
+**/*.map
+.vscode/**
+node_modules/**
+*.vsix

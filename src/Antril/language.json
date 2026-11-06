@@ -1,0 +1,15 @@
+{
+  "id": "antril",
+  "name": "Antril",
+  "version": "0.8.0",
+  "description": "Antril for Larva: its frontend (Antril source to Larva HIR), its view (HIR written as Antril) and its editor services",
+  "author": "Antril Organization",
+  "license": "Proprietary",
+  "homepage": "https://antril.org",
+  "extensions": [".ant"],
+  "icon": "ant-file.ico",
+  "abi": 1,
+  "larva": "0.8.0",
+  "entry": "Antril.dll",
+  "files": {}
+}

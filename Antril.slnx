@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Antril/Antril.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Antril.Tests/Antril.Tests.csproj" />
+  </Folder>
+  <Folder Name="/Larva/">
+    <Project Path="../Larva/Larva.Hir/Larva.Hir.csproj" />
+    <Project Path="../Larva/Larva.Hir.Services/Larva.Hir.Services.csproj" />
+  </Folder>
+</Solution>

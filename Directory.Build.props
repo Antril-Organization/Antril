@@ -1,0 +1,11 @@
+<Project>
+  <!--
+    Antril is a language for Larva: its frontend builds against Larva's libraries (HIR and its services), taken from a
+    Larva working copy next to this one (..\Larva) unless LarvaRoot says where.
+  -->
+  <PropertyGroup>
+    <LarvaRoot Condition="'$(LarvaRoot)' == ''">$(MSBuildThisFileDirectory)..\Larva\</LarvaRoot>
+    <!-- The compiler's own speed: optimized code in every configuration (Debug keeps its symbols for debugging). -->
+    <Optimize>true</Optimize>
+  </PropertyGroup>
+</Project>

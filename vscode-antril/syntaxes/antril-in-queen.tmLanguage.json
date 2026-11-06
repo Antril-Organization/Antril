@@ -1,0 +1,5 @@
+{
+  "scopeName": "antril.queen-expressions",
+  "injectionSelector": "L:meta.embedded.expression.queen",
+  "patterns": [{ "include": "source.antril" }]
+}

@@ -1,0 +1,10 @@
+bin/
+obj/
+.vs/
+artifacts/
+*.vsix
+node_modules/
+*.user
+*.key
+*.pem
+TestResults/

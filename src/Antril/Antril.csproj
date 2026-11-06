@@ -1,0 +1,59 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Antril's language pack for Larva: the frontend (Antril source to Larva HIR), its view (HIR written as Antril) and its
+    editor services, behind the language entry points Larva loads (Pack/LanguageExports.cs).
+
+    A build also writes the pack as .NET code to artifacts/pack/Antril (Antril.dll and its manifest with the library's
+    SHA-256): a working copy of larva loads it from there with LARVA_LANGUAGES=<this repo>/artifacts/pack.
+    An installation's pack is native (tools/publish-pack.ps1, tools/publish-pack.sh), signed by Larva's installer build.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsAotCompatible>true</IsAotCompatible>
+    <Version>0.8.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Antril.Tests" />
+    <!-- The syntax tree is rewritten through reflection (AstRewriter: variadic templates): its types stay whole when native. -->
+    <TrimmerRootAssembly Include="Antril" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(LarvaRoot)Larva.Hir\Larva.Hir.csproj" />
+    <ProjectReference Include="$(LarvaRoot)Larva.Hir.Services\Larva.Hir.Services.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="$(LarvaRoot)Larva.IR\SoftFloat.cs" Link="SoftFloat.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="language.json;ant-file.ico;ant-file.svg;ant-file.icns" CopyToOutputDirectory="Never" />
+  </ItemGroup>
+
+  <!-- The pack as .NET code, for a working copy of larva (not when publishing natively). -->
+  <Target Name="DevelopmentPack" AfterTargets="Build" Condition="'$(PublishAot)' != 'true'">
+    <PropertyGroup>
+      <AntrilPack>$(MSBuildThisFileDirectory)..\..\artifacts\pack\Antril\</AntrilPack>
+    </PropertyGroup>
+    <Copy SourceFiles="$(OutDir)Antril.dll" DestinationFolder="$(AntrilPack)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="ant-file.ico" DestinationFolder="$(AntrilPack)" SkipUnchangedFiles="true" />
+    <GetFileHash Files="$(AntrilPack)Antril.dll" Algorithm="SHA256" HashEncoding="hex">
+      <Output TaskParameter="Hash" PropertyName="AntrilHash" />
+    </GetFileHash>
+    <GetFileHash Files="$(AntrilPack)ant-file.ico" Algorithm="SHA256" HashEncoding="hex">
+      <Output TaskParameter="Hash" PropertyName="IconHash" />
+    </GetFileHash>
+    <PropertyGroup>
+      <AntrilManifest>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)language.json'))</AntrilManifest>
+      <AntrilManifest>$(AntrilManifest.Replace('"files": {}', '"files": { "Antril.dll": "$(AntrilHash.ToLowerInvariant())", "ant-file.ico": "$(IconHash.ToLowerInvariant())" }'))</AntrilManifest>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(AntrilPack)language.json" Lines="$(AntrilManifest)" Overwrite="true" WriteOnlyWhenDifferent="true" />
+  </Target>
+
+</Project>
