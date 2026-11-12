@@ -1271,6 +1271,56 @@ public sealed unsafe class CoreLibraryTests : CheckedTest
                 return r + (first && current == 5 && !more && !it.Next() ? 10000 : 0);
             }
 
+            public static class Closing { public: static i32 closed; }
+
+            public Guarded(i32 to) : Iterator<i32>
+            {
+                try
+                {
+                    loop (i32 i = 1..to)
+                        yield i;
+                }
+                finally
+                {
+                    Closing.closed++;
+                }
+            }
+
+            FirstAbove(i32 limit) : i32
+            {
+                loop (i32 x in Guarded(100))
+                    if (x > limit)
+                        return x;
+                return -1;
+            }
+
+            public Disposed() : i32
+            {
+                Closing.closed = 0;
+                i32 r = 0;
+                loop (i32 x in Guarded(100))
+                {
+                    r += x;
+                    if (x == 3)
+                        break;
+                }
+                r += Closing.closed == 1 ? 10 : 0;
+                r += FirstAbove(4) == 5 && Closing.closed == 2 ? 100 : 0;
+                try
+                {
+                    loop (i32 x in Guarded(100))
+                        if (x == 2)
+                            throw new Exception("stop");
+                }
+                catch (Exception e)
+                {
+                    r += Closing.closed == 3 ? 1000 : 0;
+                }
+                loop (i32 x in Guarded(3))
+                    r += 0;
+                return r + (Closing.closed == 4 ? 10000 : 0);
+            }
+
             public async Fetch2(i32 n) : Task<i32>
             {
                 await Task.Yield();
@@ -3359,6 +3409,7 @@ public sealed unsafe class CoreLibraryTests : CheckedTest
         ("Captures", 128912, "lambdas in loops: each pass's variables, a variable shared outside the loop"),
         ("Grids", 11123425, "N-dimensional arrays: new, literals, `[i, j]`, loops in row order, Length, Rank, GetLength"),
         ("Iterators", 11246, "`yield`: a range, a filter with `yield break`, a generic iterator, Next/Current by hand"),
+        ("Disposed", 11116, "an iterator left early (`break`, `return`, an exception) is disposed: its `finally` runs once; one walked to its end is not disposed twice"),
         ("Linked", 1111, "LinkedList: add at both ends and next to a node, remove, Find; objects compared with ==, !="),
         ("SortedMaps", 11111, "SortedDictionary (AVL in arrays): order, Remove, MinKey, MaxKey, TryGet; SortedSet"),
         ("Priorities", 1111, "PriorityQueue (4-ary heap): Peek, Dequeue order, EnqueueDequeue, 1,000 random priorities"),
