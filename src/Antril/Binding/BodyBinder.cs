@@ -673,11 +673,13 @@ namespace Antril.Binding
                 var current = PropertyRead(itExpr, "Current", loop.Collection.Span);
                 int variable = Declare(loop.Name, type, loop.Span);
                 var body = Loop(loop.Body);
-                result = new H.BlockStmt([
-                    new H.LocalStmt(it, iterator),
-                    new H.WhileStmt(Convert(next, H.HirType.Bool, loop.Collection.Span),
-                        new H.BlockStmt([new H.LocalStmt(variable, Convert(current, type, loop.Span)), body])),
-                ]);
+                H.Stmt walk = new H.WhileStmt(Convert(next, H.HirType.Bool, loop.Collection.Span),
+                    new H.BlockStmt([new H.LocalStmt(variable, Convert(current, type, loop.Span)), body]));
+                // An iterator left before its end (`break`, `return`, an exception) is disposed: the `finally` blocks
+                // around the `yield` it paused at run. Disposing one that has ended does nothing.
+                if (binder.MemberSymbolOf(iterator.Type) is { } iteratorSymbol && BoundCall(itExpr, iteratorSymbol, "Dispose", []) is { } dispose)
+                    walk = new H.TryStmt(new H.BlockStmt([walk]), [], new H.BlockStmt([new H.ExprStmt(dispose)]));
+                result = new H.BlockStmt([new H.LocalStmt(it, iterator), walk]);
             }
             Pop();
             return result;
