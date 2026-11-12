@@ -194,8 +194,26 @@ namespace Antril.Syntax
                 int depth = 0;
                 while (true)
                 {
-                    SkipTrivia();
-                    if (position >= text.Length || text[position] == '"' && depth == 0)
+                    // Spaces and comments between the hole's tokens; the string (hole included) ends with its line.
+                    while (position < text.Length && (text[position] is ' ' or '\t' or '\r' || text[position] == '/' && Peek(1) == '*'))
+                    {
+                        if (text[position] != '/')
+                        {
+                            position++;
+                            continue;
+                        }
+                        int close = text.IndexOf("*/", position + 2, StringComparison.Ordinal);
+                        if (close < 0)
+                        {
+                            diagnostics.Error("AN0002", "unterminated comment", source, new TextSpan(position, 2));
+                            position = text.Length;
+                        }
+                        else
+                        {
+                            position = close + 2;
+                        }
+                    }
+                    if (position >= text.Length || text[position] == '\n' || text[position] == '"' && depth == 0 || text[position] == '/' && Peek(1) == '/')
                     {
                         diagnostics.Error("AN0007", "an interpolated string's hole ends with `}`", source, Span(start));
                         tokens.Add(new Token(TokenKind.HoleEnd, new TextSpan(position, 0), "}"));

@@ -1996,7 +1996,15 @@ namespace Antril.Syntax
                         Add(new StringLiteral(value, piece.Span));
                     continue;
                 }
-                Expect(TokenKind.HoleStart, "'{'");
+                if (!At(TokenKind.HoleStart))
+                {
+                    // Not a piece of text nor a hole: what is left of a hole that went wrong. Skip to the next piece.
+                    Error("AN0007", $"expected `{{` or text in the interpolated string, found {Current}", Current.Span);
+                    while (!At(TokenKind.String) && !At(TokenKind.HoleStart) && !At(TokenKind.InterpolationEnd) && !At(TokenKind.EndOfFile))
+                        Next();
+                    continue;
+                }
+                Next();
                 var value2 = ParseExpression();
                 Expr? alignment = null;
                 if (Accept(TokenKind.Comma))
@@ -2016,7 +2024,14 @@ namespace Antril.Syntax
                         part = new BinaryExpr(BinaryOperator.Add, new StringLiteral("", part.Span), part, part.Span);
                     part = new CallExpr(new MemberExpr(part, left ? "PadRight" : "PadLeft", [], alignment.Span) { NameSpan = alignment.Span }, [width], TextSpan.FromBounds(part.Span.Start, alignment.Span.End));
                 }
-                Expect(TokenKind.HoleEnd, "'}'");
+                if (!Accept(TokenKind.HoleEnd))
+                {
+                    // The hole's expression ended before its `}` (or the hole never closed): skip what is left of it.
+                    Error("AN0010", $"expected '}}', found {Current}", Current.Span);
+                    while (!At(TokenKind.HoleEnd) && !At(TokenKind.String) && !At(TokenKind.HoleStart) && !At(TokenKind.InterpolationEnd) && !At(TokenKind.EndOfFile))
+                        Next();
+                    Accept(TokenKind.HoleEnd);
+                }
                 Add(part);
             }
             Expect(TokenKind.InterpolationEnd, "'\"'");
@@ -2154,7 +2169,7 @@ namespace Antril.Syntax
                         return new NameExpr(token.Text, [], token.Span);
                     }
                     Error("AN0019", $"expected an expression, found {token}", token.Span);
-                    if (token.Kind is not (TokenKind.EndOfFile or TokenKind.Semicolon or TokenKind.CloseBrace or TokenKind.CloseParen))
+                    if (token.Kind is not (TokenKind.EndOfFile or TokenKind.Semicolon or TokenKind.CloseBrace or TokenKind.CloseParen or TokenKind.HoleEnd or TokenKind.InterpolationEnd))
                         Next();
                     return new NullLiteral(new TextSpan(token.Span.Start, 0));
             }

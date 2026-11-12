@@ -650,6 +650,8 @@ public sealed unsafe class AntrilTests : CheckedTest
             ("F() : u32 => '😀';", "", "a character beyond the BMP is its code point (a u32)"),
             ("F() : u16 { u16 c = '😀'; return c; }", "AN2084", "…which a u16 does not hold"),
             ("F() : u32 => 'ab';", "AN0005", "a character literal is one character"),
+            ("F(i32 x) : str { str s = $\"{x} {\n return s; }", "AN0007", "an unterminated hole ends with its line (the parser went on forever)"),
+            ("F(i32 x) : str { str s = $\"{x} {x\n return s; }", "AN0007", "a hole without its `}` ends with its line"),
             ("public static class Tools { } F() { Tools t = default(Tools); }", "AN1105", "a variable of a static class"),
             ("public static class Tools { } public class Box { Tools inner; }", "AN1105", "a field of a static class"),
             ("public static class Tools { } F(Tools t) { }", "AN1105", "a parameter of a static class"),

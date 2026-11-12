@@ -3518,6 +3518,7 @@ public sealed unsafe class CoreLibraryTests : CheckedTest
             ("record class R { public: i32 x; } class D : R { }", "AN1076", "a class deriving from a record class"),
             ("class B { } record class R : B { public: i32 x; }", "AN1076", "a record class extending a class"),
             ("record class R { public: i32 x; new(i32 v) { x = v; } } F() { R r = new R(1); r.x = 2; }", "AN2070", "assigning a record's field (all are readonly)"),
+            ("F(i32 x) : str => $\"{x} { x /* a comment */ } {x,4} {x:X}\";", "", "a hole with a comment, an alignment and a format (A31: a hole ends with its line)"),
             ("class C { public: i32 x; } F() : C => new C() with { x = 1 };", "AN2132", "`with` on a plain class"),
             ("record class R { public: i32 x; } F(R r) : R => r with { y = 1 };", "AN2133", "`with` naming a field the record lacks"),
             ("record class R { public: i32 x; } F(R? a, R? b) : bool => a == b;", "AN2134", "`==` on nullable records"),
