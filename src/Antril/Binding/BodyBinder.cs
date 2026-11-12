@@ -1118,6 +1118,9 @@ namespace Antril.Binding
         {
             H.Primitive.F64 => H.FloatConstant.Of(literal.Value),
             H.Primitive.F32 => H.FloatConstant.Of((float)literal.Value),
+            // An exponent beyond what any format holds (`1e99999999`, which the lexer reports) is an infinity or a zero:
+            // the double read says which, without raising 10 to it.
+            _ when Lexer.ExponentOutOfRange(LiteralDigits(literal)) => new H.FloatConstant(SoftFloat.FromDouble(literal.Value, FloatFormat.Of(kind.Bits())), kind),
             _ => new H.FloatConstant(SoftFloat.FromText(LiteralDigits(literal), FloatFormat.Of(kind.Bits())), kind),
         };
 
