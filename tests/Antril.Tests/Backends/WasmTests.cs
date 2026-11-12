@@ -19,7 +19,7 @@ public sealed class WasmTests : CheckedTest
     /// Cases that do not apply to WebAssembly: real threads (a thread here runs at once, to the end), processes and sockets
     /// (no such thing in a WebAssembly module) and native memory (System.Exchange packets).
     /// </summary>
-    private static readonly HashSet<string> Skipped = ["Threads", "Syncs", "Parallels", "TaskRuns", "Processes", "Network", "Exchange"];
+    private static readonly HashSet<string> Skipped = ["Threads", "Syncs", "Parallels", "NestedParallels", "TaskRuns", "DelayWhileYielding", "Processes", "Network", "Exchange"];
 
     private static readonly (string Function, int Expected, string What)[] Cases =
         [.. CoreLibraryTests.CaseList.Where(c => !Skipped.Contains(c.Function))];

@@ -3620,8 +3620,12 @@ public sealed unsafe class CoreLibraryTests : CheckedTest
         interpreter.Run(HirLowerer.StaticInitName);
         ((delegate* unmanaged<void>)image.Address(HirLowerer.StaticInitName))();
         ((delegate* unmanaged<void>)jit.Address(HirLowerer.StaticInitName))();
+        // LARVA_CASES=A,B runs only those cases (to corner one that hangs or fails).
+        var only = Environment.GetEnvironmentVariable("LARVA_CASES") is { Length: > 0 } list ? new HashSet<string>(list.Split(',')) : null;
         foreach (var (name, expected, what) in Cases)
         {
+            if (only is not null && !only.Contains(name))
+                continue;
             string function = $"CoreTest.$Module.{name}";
             object? onVm;
             try
