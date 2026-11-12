@@ -1018,6 +1018,7 @@ namespace Antril.Binding
                         return new H.DefaultExpr(ErrorType);
                     if (!IsReference(inner) || !IsReference(value.Type is H.NullableType vn ? vn.Inner : value.Type))
                         return Failed("AN2020", "`as` converts between object types", test.Span);
+                    TypeTest(type, value.Type, test.Span); // a test that can never hold is an error, as with `is`
                     return new H.AsExpr(value, new H.NullableType(inner));
                 }
                 case SwitchExpr s:
@@ -3519,14 +3520,16 @@ namespace Antril.Binding
                 return (Convert(a, b.Type, span), b, b.Type);
             if (Cost(b, a.Type) is not null)
                 return (a, Convert(b, a.Type, span), a.Type);
-            // Two classes: their closest common base.
-            if (binder.SymbolOf(a.Type) is { IsClass: true } ca && binder.SymbolOf(b.Type) is { IsClass: true } cb)
+            // Two classes: their closest common base (as each sees it, with the same type arguments from both).
+            if (binder.SymbolOf(a.Type) is { IsClass: true } ca && binder.SymbolOf(b.Type) is { IsClass: true })
             {
+                var aInner = a.Type is H.NullableType an ? an.Inner : a.Type;
+                var bInner = b.Type is H.NullableType bn ? bn.Inner : b.Type;
                 for (var t = ca; t is not null; t = t.Base)
                 {
-                    if (cb.IsOrDerives(t))
+                    if (Ancestor(aInner, t) is var (fromA, _) && Ancestor(bInner, t) is var (fromB, _) && fromA == fromB)
                     {
-                        var common = a.Type is H.NullableType || b.Type is H.NullableType ? new H.NullableType(t.Type) : t.Type;
+                        H.HirType common = a.Type is H.NullableType || b.Type is H.NullableType ? new H.NullableType(fromA) : fromA;
                         return (Convert(a, common, span), Convert(b, common, span), common);
                     }
                 }
@@ -3604,13 +3607,9 @@ namespace Antril.Binding
             var targetInner = target is H.NullableType tn ? tn.Inner : target;
             if (from is H.NullableType && target is not H.NullableType)
                 return null;
-            if (binder.SymbolOf(fromInner) is { IsClass: true } fc && binder.SymbolOf(targetInner) is { IsClass: true } tc && fc.IsOrDerives(tc))
-            {
-                int depth = 0;
-                for (var t = fc; t != tc; t = t!.Base)
-                    depth++;
+            // A class to itself or a base, with the same type arguments (a `Box<str>` is not a `Box<i32>`: there is no variance).
+            if (binder.SymbolOf(targetInner) is { IsClass: true } tc && Ancestor(fromInner, tc) is var (ancestor, depth) && ancestor == targetInner)
                 return depth + (from is H.NullableType == target is H.NullableType ? 0 : 1);
-            }
             if (target is H.NullableType && fromInner == targetInner)
                 return 1;
             int wrap = from is H.NullableType == target is H.NullableType ? 0 : 1;
@@ -3625,6 +3624,24 @@ namespace Antril.Binding
                 return 2 + wrap;
             if (IsValueType(fromInner) && from is not H.NullableType && IsAny(targetInner))
                 return 9 + wrap;
+            return null;
+        }
+
+        /// <summary>
+        /// The class <paramref name="ancestor"/> as the class type <paramref name="type"/> sees it (itself, or a base with
+        /// the type arguments it gets from <paramref name="type"/>'s), and how many bases up it is; null when it is not one.
+        /// </summary>
+        private (H.NamedType Type, int Depth)? Ancestor(H.HirType type, TypeSymbol ancestor)
+        {
+            if (type is not H.NamedType named || binder.SymbolOf(named) is not { IsClass: true } symbol)
+                return null;
+            int depth = 0;
+            foreach (var (t, arguments) in symbol.Chain())
+            {
+                if (t == ancestor)
+                    return (depth == 0 ? named : H.HirType.Named(t.Token, [.. arguments.Select(a => a.Substitute(named.Arguments))]), depth);
+                depth++;
+            }
             return null;
         }
 
@@ -3726,12 +3743,14 @@ namespace Antril.Binding
                     var unwrapped = from is H.NullableType ? new H.ConvertExpr(value, H.ConversionKind.Unwrap, fromInner) : value;
                     return new H.ConvertExpr(unwrapped, H.ConversionKind.Downcast, target);
                 }
-                if (binder.SymbolOf(fromInner) is { IsClass: true } fc && binder.SymbolOf(targetInner) is { IsClass: true } tc && tc.IsOrDerives(fc))
+                // To a class that derives from the value's (the type arguments the base gets from it matching; `(Box<str>)` of
+                // a `Box<i32>` is no downcast).
+                if (binder.SymbolOf(fromInner) is { IsClass: true } fc && Ancestor(targetInner, fc) is var (seen, _) && seen == fromInner)
                 {
                     var unwrapped = from is H.NullableType && target is not H.NullableType ? new H.ConvertExpr(value, H.ConversionKind.Unwrap, fromInner) : value;
                     if (target is H.NullableType)
                         return Failed("AN2082", "a downcast gives a non-null object: cast to `T`, or test with `as`", span);
-                    return fc == tc ? unwrapped : new H.ConvertExpr(unwrapped, H.ConversionKind.Downcast, target);
+                    return fromInner == targetInner ? unwrapped : new H.ConvertExpr(unwrapped, H.ConversionKind.Downcast, target);
                 }
                 if (from is H.NullableType n && n.Inner == target)
                     return new H.ConvertExpr(value, H.ConversionKind.Unwrap, target);
@@ -4190,7 +4209,10 @@ namespace Antril.Binding
             var valueInner = type is H.NullableType vn ? vn.Inner : type;
             if (binder.SymbolOf(inner) is { IsClass: true } tc && binder.SymbolOf(valueInner) is { IsClass: true } vc)
             {
-                if (!tc.IsOrDerives(vc) && !vc.IsOrDerives(tc))
+                // One must be the other or derive from it, with the type arguments the base gets matching (a `Box<i32>` is
+                // never a `Box<str>`).
+                bool related = Ancestor(inner, vc) is var (up, _) && up == valueInner || Ancestor(valueInner, tc) is var (down, _) && down == inner;
+                if (!related)
                     Error("AN2088", $"a `{Show(type)}` is never a `{Show(inner)}`", span);
                 return new H.TypePattern(inner);
             }
