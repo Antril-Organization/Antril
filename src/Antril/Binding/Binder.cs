@@ -126,6 +126,7 @@ namespace Antril.Binding
             }
             foreach (var type in Types.Values)
                 CheckInterfaces(type);
+            CheckValueCycles();
             foreach (var unit in units)
                 CheckImports(unit);
             if (FindEntry() is { } entry)
@@ -1642,6 +1643,46 @@ namespace Antril.Binding
         /// A class with an array kept in its objects: every constructor gives the length (<c>: fixed(n)</c>), and there is at
         /// least one (the objects are made by them).
         /// </summary>
+        /// <summary>
+        /// A value cannot hold itself (directly, through another value, or through an inline array of one): it would have
+        /// no size. Reported once per cycle, at the field that closes it, instead of by the lowering without a position.
+        /// </summary>
+        private void CheckValueCycles()
+        {
+            var state = new Dictionary<H.NamedType, bool>(); // false: on the current path; true: known not to hold itself
+            bool Visit(H.NamedType value)
+            {
+                if (state.TryGetValue(value, out bool done))
+                    return done;
+                if (SymbolOf(value) is not { IsStruct: true } symbol)
+                    return true;
+                state[value] = false;
+                foreach (var field in symbol.Fields.Values.Where(f => !f.IsStatic))
+                {
+                    var type = symbol.Definition.Fields[field.Index].Type;
+                    while (type is H.InlineArrayType inline)
+                        type = inline.Element;
+                    if (value.Arguments.Length > 0)
+                        type = type.Substitute(value.Arguments);
+                    if (type is not H.NamedType held || SymbolOf(held) is not { IsStruct: true } heldSymbol)
+                        continue;
+                    if (state.TryGetValue(held, out bool heldDone) && !heldDone)
+                    {
+                        if (!symbol.IsExternal && field.Declaration is FieldDecl declaration)
+                            Error("AN1106", heldSymbol == symbol ? $"`{symbol.Name}` holds a `{symbol.Name}`: a value cannot contain itself (hold an object, or a `{symbol.Name}?`)"
+                                : $"`{field.Name}` holds a `{heldSymbol.Name}`, which holds a `{symbol.Name}` back: a value cannot contain itself through other values", symbol.Scope.Source, declaration.Type.Span);
+                        continue;
+                    }
+                    Visit(held);
+                }
+                state[value] = true;
+                return true;
+            }
+            foreach (var type in Types.Values)
+                if (type.IsStruct && !type.IsExternal)
+                    Visit((H.NamedType)type.Type);
+        }
+
         private void CheckInPlace(TypeSymbol owner)
         {
             if (owner.InPlace is not { } field || field.Declaration is not FieldDecl declaration)

@@ -2716,6 +2716,17 @@ namespace Antril.Binding
                     }
                     if (!IsNumeric(target.Type) && target.Type is not H.PointerType)
                         return Failed("AN2065", $"`++` and `--` change a number, not a `{Show(target.Type)}` (a type declares `op ++(T x) : T` to have them)", unary.Span);
+                    if (target is H.PropertyExpr && target.Type is not H.PointerType)
+                    {
+                        // `c.Q++` on a property: read through `get`, write through `set`, as `c.Q += 1` does (the
+                        // lowering steps places only); `c.Q++` gives the old value, `++c.Q` the new one.
+                        var one = Convert(new H.LiteralExpr(new H.IntegerConstant(1, H.Primitive.I32), H.HirType.I32), target.Type, unary.Span);
+                        var step = new H.AssignExpr(target, one, target.Type) { Compound = increment ? H.BinaryOp.Add : H.BinaryOp.Subtract };
+                        if (before)
+                            return step;
+                        int old = Declare($"$step{locals.Count}", target.Type, default);
+                        return new H.BlockExpr([new H.LocalStmt(old, target), new H.ExprStmt(step)], new H.LocalExpr(old, target.Type), target.Type);
+                    }
                     var op = unary.Operator switch
                     {
                         UnaryOperator.PreIncrement => H.UnaryOp.PreIncrement,
@@ -2942,7 +2953,14 @@ namespace Antril.Binding
                     if (!IsInteger(target.Type))
                         return Failed("AN2073", $"shifts work on integers, not a `{Show(target.Type)}`", assign.Span);
                 }
-                else if (!(IsNumeric(target.Type) || target.Type == H.HirType.Bool && op is BinaryOperator.And or BinaryOperator.Or or BinaryOperator.Xor))
+                else if (op is BinaryOperator.And or BinaryOperator.Or or BinaryOperator.Xor)
+                {
+                    // Bits: integers, bools and bitflag enums (as `a & b` in BinaryOf), not floats.
+                    bool bitflags = target.Type is H.NamedType && binder.SymbolOf(target.Type) is { IsEnum: true, Definition.Kind: H.TypeKind.Bitflags };
+                    if (!(IsInteger(target.Type) || target.Type == H.HirType.Bool || bitflags))
+                        return Failed("AN2074", $"`{Symbol(op)}=` works on integers, bools and bitflag enums, not a `{Show(target.Type)}`", assign.Span);
+                }
+                else if (!IsNumeric(target.Type))
                 {
                     return Failed("AN2074", $"`{Symbol(op)}=` works on numbers, not a `{Show(target.Type)}`", assign.Span);
                 }

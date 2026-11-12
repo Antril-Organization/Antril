@@ -764,6 +764,15 @@ public sealed unsafe class AntrilTests : CheckedTest
             ("public enum E : i32 { One = 1, Two = Three - 1, Three = 3 }", "AN1019", "a member made of one declared after it"),
             ("public value Rgb { public: u8 r; new(u8 r) { this.r = r; } } public enum Color : Rgb { Red = new Rgb(255) } const Color Fav = Color.Red; const Rgb Raw = (Rgb)Color.Red; F() : i32 => Raw.r;",
                 "", "the members of an enum of values are constants (and so is their value)"),
+            // Medium findings 2026-11-12 (M5): what the binder used to leave to the lowering, without a position.
+            ("F() { f64 d = 1.0; d &= 2.0; }", "AN2074", "`&=` on a float"),
+            ("F() { bool b = true; b |= false; i32 n = 1; n ^= 2; }", "", "`|=` on a bool, `^=` on an integer"),
+            ("public bitflag enum Fl { A, B } F() { Fl f = Fl.A; f |= Fl.B; }", "", "`|=` on a bitflag enum"),
+            ("public class C { public: i32 Q { get; set; } } F(C c) : i32 { c.Q++; --c.Q; return c.Q--; }", "", "`++` and `--` on a property (through its accessors)"),
+            ("public value V { V inner; }", "AN1106", "a value that holds itself"),
+            ("public value A { B b; } public value B { A a; }", "AN1106", "a value that holds itself through another value"),
+            ("public value W<T> { T item; } public value S { W<S> w; }", "AN1106", "a value that holds itself through a generic value"),
+            ("public value W<T> { T item; } public value S { W<i32> w; S? maybe; S[] many; }", "", "a value holding other values, a nullable and an array of itself"),
         ];
         foreach (var (text, code, what) in wrong)
         {
