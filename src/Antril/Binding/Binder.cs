@@ -391,6 +391,19 @@ namespace Antril.Binding
         /// A class's base class (the first of its bases, when it is a class; else <c>System.Any</c> when the program has
         /// it) and the interfaces a type implements.
         /// </summary>
+        /// <summary>Whether <paramref name="iface"/> is <paramref name="sought"/> or extends it, through the interfaces resolved so far.</summary>
+        private bool Extends(TypeSymbol iface, TypeSymbol sought, HashSet<TypeSymbol> seen)
+        {
+            if (iface == sought)
+                return true;
+            if (!seen.Add(iface))
+                return false;
+            foreach (var extended in iface.Interfaces)
+                if (SymbolOf(extended) is { } symbol && Extends(symbol, sought, seen))
+                    return true;
+            return false;
+        }
+
         private void ResolveBase(TypeSymbol type)
         {
             if (type.Declaration is not { } declaration)
@@ -445,6 +458,12 @@ namespace Antril.Binding
                 }
                 if (found is { IsInterface: true })
                 {
+                    if (type.IsInterface && Extends(found, type, []))
+                    {
+                        // `I : J` with `J : I` (through any number of interfaces): the lowering would walk it forever.
+                        Error("AN1010", $"`{type.Name}` inherits from itself", type.Scope.Source, syntax.Span);
+                        continue;
+                    }
                     type.Interfaces.Add((H.NamedType)resolved);
                     type.Definition.Interfaces.Add(resolved);
                     continue;

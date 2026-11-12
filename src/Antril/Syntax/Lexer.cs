@@ -194,8 +194,26 @@ namespace Antril.Syntax
                 int depth = 0;
                 while (true)
                 {
-                    SkipTrivia();
-                    if (position >= text.Length || text[position] == '"' && depth == 0)
+                    // Spaces and comments between the hole's tokens; the string (hole included) ends with its line.
+                    while (position < text.Length && (text[position] is ' ' or '\t' or '\r' || text[position] == '/' && Peek(1) == '*'))
+                    {
+                        if (text[position] != '/')
+                        {
+                            position++;
+                            continue;
+                        }
+                        int close = text.IndexOf("*/", position + 2, StringComparison.Ordinal);
+                        if (close < 0)
+                        {
+                            diagnostics.Error("AN0002", "unterminated comment", source, new TextSpan(position, 2));
+                            position = text.Length;
+                        }
+                        else
+                        {
+                            position = close + 2;
+                        }
+                    }
+                    if (position >= text.Length || text[position] == '\n' || text[position] == '"' && depth == 0 || text[position] == '/' && Peek(1) == '/')
                     {
                         diagnostics.Error("AN0007", "an interpolated string's hole ends with `}`", source, Span(start));
                         tokens.Add(new Token(TokenKind.HoleEnd, new TextSpan(position, 0), "}"));
@@ -426,11 +444,32 @@ namespace Antril.Syntax
                 return new Token(TokenKind.Float, Span(start), literal, 0.0) { Suffix = suffix };
             }
             if (isFloat)
-                return new Token(TokenKind.Float, Span(start), literal, double.Parse(digits.ToString(), CultureInfo.InvariantCulture)) { Suffix = suffix };
+            {
+                string written = digits.ToString();
+                if (ExponentOutOfRange(written))
+                    diagnostics.Error("AN0041", $"number out of range: the exponent of '{literal}' is beyond ±{MaxExponent} (no float holds it)", source, Span(start));
+                return new Token(TokenKind.Float, Span(start), literal, double.Parse(written, CultureInfo.InvariantCulture)) { Suffix = suffix };
+            }
             BigInteger value = BigInteger.Zero;
             foreach (char d in digits.ToString())
                 value = value * radix + (char.IsAsciiDigit(d) ? d - '0' : char.ToLowerInvariant(d) - 'a' + 10);
             return new Token(TokenKind.Integer, Span(start), literal, value) { Suffix = suffix };
+        }
+
+        /// <summary>The largest exponent a float literal may write (f256 holds about 10^78913; a reading beyond this is cut short).</summary>
+        public const int MaxExponent = 100_000;
+
+        /// <summary>Whether a float literal's digits (`1.5e-3`, no suffix) have an exponent beyond ±<see cref="MaxExponent"/>.</summary>
+        public static bool ExponentOutOfRange(string digits)
+        {
+            int e = digits.IndexOfAny(['e', 'E']);
+            if (e < 0)
+                return false;
+            var exponent = digits.AsSpan(e + 1).Trim('_');
+            if (exponent.Length > 0 && exponent[0] is '+' or '-')
+                exponent = exponent[1..];
+            exponent = exponent.TrimStart('0');
+            return exponent.Length > 6 || exponent.Length > 0 && int.Parse(exponent, CultureInfo.InvariantCulture) > MaxExponent;
         }
 
         private static bool IsDigit(char c, int radix) => radix switch

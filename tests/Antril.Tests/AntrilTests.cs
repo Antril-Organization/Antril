@@ -31,6 +31,9 @@ public sealed unsafe class AntrilTests : CheckedTest
     public void Frontend_speed_on_a_large_program() => Speed();
 
     [Fact]
+    public void Pathological_programs_end_with_a_diagnostic_or_compile() => Pathological();
+
+    [Fact]
     public void Benchmarks_built_as_executables_give_the_right_results() => Executables();
 
     internal const string Phase3Source = """
@@ -650,6 +653,8 @@ public sealed unsafe class AntrilTests : CheckedTest
             ("F() : u32 => '😀';", "", "a character beyond the BMP is its code point (a u32)"),
             ("F() : u16 { u16 c = '😀'; return c; }", "AN2084", "…which a u16 does not hold"),
             ("F() : u32 => 'ab';", "AN0005", "a character literal is one character"),
+            ("F(i32 x) : str { str s = $\"{x} {\n return s; }", "AN0007", "an unterminated hole ends with its line (the parser went on forever)"),
+            ("F(i32 x) : str { str s = $\"{x} {x\n return s; }", "AN0007", "a hole without its `}` ends with its line"),
             ("public static class Tools { } F() { Tools t = default(Tools); }", "AN1105", "a variable of a static class"),
             ("public static class Tools { } public class Box { Tools inner; }", "AN1105", "a field of a static class"),
             ("public static class Tools { } F(Tools t) { }", "AN1105", "a parameter of a static class"),
@@ -663,6 +668,7 @@ public sealed unsafe class AntrilTests : CheckedTest
             ("F() { throw; }", "AN2006", "throw; outside a catch"),
             ("F() : i32 { i64 big = 1; i32 small = big; return small; }", "AN2084", "narrowing needs a cast"),
             ("class A { } class B : A { } class C { } F(A a) : bool => a is C;", "AN2088", "a type test that can never hold"),
+            ("F(i32 x) { switch (x) { 1 => return, ) => return, } }", "AN0019", "a stray `)` in a switch arm (the parser went on forever)"),
             ("class Box<T> { } F() { Box<i32> b = new Box<bool>(); }", "AN2084", "a class to the same class with other type arguments (no variance)"),
             ("class Box<T> { } class Derived<T> : Box<T> { } F() { Box<i32> b = new Derived<bool>(); }", "AN2084", "a class to a base with other type arguments"),
             ("class Box<T> { } class Fixed : Box<i32> { } F() { Box<bool> b = new Fixed(); }", "AN2084", "a class whose base fixes the type arguments, to the base with others"),
@@ -673,6 +679,9 @@ public sealed unsafe class AntrilTests : CheckedTest
             ("interface I<T> { } class Holder<T> : I<T> { } F() { I<bool> h = new Holder<i32>(); }", "AN2084", "an interface with other type arguments"),
             ("class Box<T> { } F(Box<i32> a) : bool => a is Box<bool>;", "AN2088", "a type test with other type arguments can never hold"),
             ("class Box<T> { } F(Box<i32> a) : Box<bool>? => a as Box<bool>;", "AN2088", "`as` with other type arguments can never hold"),
+            ("public interface I : J { } public interface J : I { }", "AN1010", "interfaces that extend each other (a stack overflow)"),
+            ("public interface I : J { } public interface J : K { } public interface K : I { }", "AN1010", "a cycle of three interfaces"),
+            ("public interface I { } public interface J : I { } public interface K : I, J { }", "", "an interface reached twice is no cycle"),
             ("class Box<T> { } F(Box<i32> a) : Box<bool> => (Box<bool>)a;", "AN2084", "a cast to the class with other type arguments"),
             ("class Box<T> { } class Derived<T> : Box<T> { } F(Box<i32> a) : Derived<bool> => (Derived<bool>)a;", "AN2084", "a downcast to a derived class with other type arguments"),
             ("class Box<T> { } F(bool c) : Box<i32> => c ? new Box<i32>() : new Box<bool>();", "AN2080", "the branches of ?: with other type arguments (no common type)"),
@@ -685,6 +694,9 @@ public sealed unsafe class AntrilTests : CheckedTest
             ("F(i32 n) : i32 { switch (n) { 1 => return 1, _ => return 0 } }", "", "a switch that returns on every arm"),
             ("class A { public: virtual F() : i32 => 1; } class B : A { public: F() : i32 => 2; }", "AN1038", "replacing a virtual without override"),
             ("F() : i32 { i32 a = 1; i32 a = 2; return a; }", "AN2003", "a local declared twice"),
+            ("F() : f128 => 1e99999999;", "AN0041", "an exponent beyond every float (the compiler hung)"),
+            ("F() : f32 => 1e-99999999;", "AN0041", "a negative exponent beyond every float"),
+            ("F() : f128 { f128 a = 1e-400; f128 b = 1e4000; f16 c = 1e-400; return a + b + c; }", "", "exponents within the formats stay exact (and below f16 give zero)"),
             ("F() : i32 { return 1 }", "AN0010", "a missing semicolon"),
             ("public value Box<TArgs..., K> { }", "AN1420", "only the last type parameter is a pack"),
             ("public private class Both { }", "AN0038", "two access words"),
@@ -699,6 +711,10 @@ public sealed unsafe class AntrilTests : CheckedTest
             ("public final class Ok { u64 tag; fixed u16[] units; public: new(i32 n) : fixed(n) { units[0] = 1; } N() : i32 => units.Length; }", "", "an array kept in place, read by index and Length"),
             ("private class Top { }", "AN1093", "a namespace's type that is private"),
             ("inherited F() : i32 => 1;", "AN1093", "a namespace's function that is inherited"),
+            ("F(i32 n) : i32 { loop (true) { checked { if (n > 0) break; } return 1; } }", "AN2001", "a `break` in a `checked` block leaves the loop (the function fell off its end)"),
+            ("F(i32 n) : i32 { loop (true) { unchecked { if (n > 0) break; } return 1; } }", "AN2001", "a `break` in an `unchecked` block"),
+            ("F(i32 n) : i32 { loop (true) { checked { if (n > 0) return 2; } return 1; } }", "", "a `checked` block that leaves no path out of the loop"),
+            ("F(i32 n) : i32 { checked { return n + 1; } }", "", "a `checked` block that returns"),
             ("public value V { inherited i32 x; }", "AN1094", "inherited in a value (nothing derives from it)"),
             ("public final class Fin { inherited G() { } }", "AN1094", "inherited in a final class"),
             ("public interface I { private H() : i32; }", "AN1095", "an interface member that is not public"),
@@ -716,6 +732,15 @@ public sealed unsafe class AntrilTests : CheckedTest
             ("const i32[] T = [1];", "AN1088", "an array is not a constant"),
             ("const i32 NoValue;", "AN1087", "a constant without its value"),
             ("F() { const i32 x = 3; x = 4; }", "AN2140", "a local constant is never assigned"),
+            ("public value R { public: i32 X; Bump() { X++; } } public class C { public: readonly R R; new() { } } F(C c) { c.R.X = 5; }", "AN2070", "a field of a value held in a readonly field (written through it)"),
+            ("public value R { public: i32 X; Bump() { X++; } } public class C { public: readonly R R; new() { } } F(C c) { c.R.X++; }", "AN2070", "counting a field of a value held in a readonly field"),
+            ("public value R { public: i32 X; Bump() { X++; } } public class C { public: readonly R R; new() { } } F(C c) { c.R.Bump(); }", "AN2070", "a method that changes a value held in a readonly field"),
+            ("public value R { public: i32 X; Bump() { X++; } } F() { const R k = new R(); k.Bump(); }", "AN2140", "a method that changes a constant value"),
+            ("public value R { public: i32 X; Bump() { X++; } Get() : i32 => X; } public class C { public: readonly R R; new() { } } F(C c) : i32 => c.R.Get() + c.R.X;", "", "reading a value held in a readonly field, and a method that only reads"),
+            ("public value R { public: i32 X; Bump() { X++; } } public class C { public: readonly R R; new() { R.X = 1; R.Bump(); } }", "", "a readonly field's value changes in the constructor"),
+            ("public value R { public: i32 X; Bump() { X++; } Twice() { Bump(); } } public class C { public: readonly R R; new() { } } F(C c) { c.R.Twice(); }", "AN2070", "a method that changes the value through another of its own"),
+            ("public value R { public: i32 X; i32 P { get => X; set => X = value; } } public class C { public: readonly R R; new() { } } F(C c) { c.R.P = 1; }", "AN2070", "a value's setter on a value held in a readonly field"),
+            ("public class Inner { public: i32 X; } public value R { public: Inner In; Touch() { In.X = 1; } } public class C { public: readonly R R; new() { } } F(C c) { c.R.In.X = 2; c.R.Touch(); }", "", "an object held in a readonly value changes freely"),
             ("import A, B from Lib as X; F() { }", "AN0034", "one alias for each name imported"),
             ("import Nope from Lib; into namespace Lib { G() : i32 => 1; } F() { }", "AN1084", "a name the namespace does not have"),
             ("import G from Lib as H; into namespace Lib { G() : i32 => 1; } F() : i32 => H();", "", "a function taken by name, by its alias"),
@@ -754,6 +779,45 @@ public sealed unsafe class AntrilTests : CheckedTest
         var located = AntrilCompiler.Compile("F() : i32\n{\n    return nope;\n}\n", "where.ant");
         Check("diagnostics say file, line and column", located.Diagnostics.FirstOrDefault()?.ToString().StartsWith("where.ant(3,12): error AN2033", StringComparison.Ordinal) == true,
             located.Diagnostics.FirstOrDefault()?.ToString());
+    }
+
+    /// <summary>
+    /// Programs that used to hang the compiler or overflow its stack (audit 2026-11-12, A30-A33): each ends, with a
+    /// diagnostic when it is wrong or compiled when it is right. Each case runs with a time limit.
+    /// </summary>
+    private void Pathological()
+    {
+        static string Program(string body, string more = "") => "into namespace P {\n" + more + "F(i32 a) : i32 {\n" + body + "\n}\n}\n";
+        string deepType = string.Concat(Enumerable.Repeat("System.Collections.List<", 1000)) + "i32" + new string('>', 1000);
+        (string What, string Source, string Code)[] cases =
+        [
+            ("1000 nested parentheses", Program("return " + new string('(', 1000) + "a" + new string(')', 1000) + ";"), "AN0040"),
+            ("500 nested parentheses", Program("return " + new string('(', 500) + "a" + new string(')', 500) + ";"), ""),
+            ("500 nested calls", Program("return " + string.Concat(Enumerable.Repeat("G(", 500)) + "a" + new string(')', 500) + ";", "G(i32 x) : i32 => x + 1;\n"), ""),
+            ("500 nested blocks", Program(new string('{', 500) + "a = 2;" + new string('}', 500) + " return a;"), ""),
+            ("1000 nested blocks", Program(new string('{', 1000) + "a = 2;" + new string('}', 1000) + " return a;"), "AN0040"),
+            ("500 prefix operators", Program("return " + new string('~', 500) + "a;"), ""),
+            ("2000 prefix operators", Program("return " + new string('~', 2000) + "a;"), "AN0040"),
+            ("a chain of 100000 terms", Program("return " + string.Join(" + ", Enumerable.Repeat("a", 100_000)) + ";"), ""),
+            ("a chain of 50000 comparisons and conditions", Program("return " + string.Join(" && ", Enumerable.Repeat("a < 1", 50_000)) + " ? 1 : 0;"), ""),
+            ("1000 nested type arguments", Program("return a;", deepType + " x;\n"), "AN0040"),
+        ];
+        foreach (var (what, text, code) in cases)
+        {
+            var task = Task.Run(() => AntrilCompiler.Compile(text, "deep.ant"));
+            bool ended = task.Wait(TimeSpan.FromSeconds(60));
+            Check($"{what}: the compiler ends", ended);
+            if (!ended)
+                continue;
+            var result = task.Result;
+            if (code.Length == 0)
+                Check($"{what}: compiles", result.Success, string.Join("; ", result.Diagnostics.Take(3)));
+            else
+                Check($"{what}: {code}", !result.Success && result.Diagnostics.Any(d => d.Code == code), string.Join("; ", result.Diagnostics.Take(3)));
+        }
+        // After a nesting error the rest of the file is read: its other declarations are found.
+        var after = AntrilCompiler.Compile(Program("return a;", deepType + " x;\nH() : i32 => 1;\n") + "into namespace Q { K() : i32 => P.H(); }", "deep.ant");
+        Check("after a nesting error the rest of the file is read (only AN0040 is reported)", after.Diagnostics.Count > 0 && after.Diagnostics.All(d => d.Code == "AN0040"), string.Join("; ", after.Diagnostics.Take(3)));
     }
 
     // ── Speed ──────────────────────────────────────────

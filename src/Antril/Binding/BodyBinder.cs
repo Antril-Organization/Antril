@@ -813,6 +813,7 @@ namespace Antril.Binding
                 && s.Sections.All(x => Terminates(x.Body)),
             H.UnsafeStmt u => Terminates(u.Body),
             H.RegionStmt r => Terminates(r.Body),
+            H.CheckedStmt c => Terminates(c.Body),
             _ => false,
         };
 
@@ -825,6 +826,7 @@ namespace Antril.Binding
             H.TryStmt t => Breaks(t.Body) || t.Catches.Any(c => Breaks(c.Body)) || t.Finally is { } f && Breaks(f),
             H.UnsafeStmt u => Breaks(u.Body),
             H.RegionStmt r => Breaks(r.Body),
+            H.CheckedStmt c => Breaks(c.Body),
             _ => false,
         };
 
@@ -839,11 +841,26 @@ namespace Antril.Binding
         /// <summary>An expression; <paramref name="expected"/> types literals (and <c>null</c>, array literals) where it matters.</summary>
         private H.Expr Expression(Expr expression, H.HirType? expected)
         {
-            var bound = ExpressionCore(expression, expected);
-            if (recorder is not null && !IsError(bound.Type))
-                Record(expression, bound);
-            return bound;
+            // Binding recurses per level of the expression; the parser allows no more than its own limit, and this one
+            // keeps a tree made another way (a template, say) from overflowing the stack.
+            if (expressionDepth >= Syntax.Parser.MaxNesting)
+                return Failed("AN2146", $"the expression is nested too deeply (more than {Syntax.Parser.MaxNesting} levels): split it", expression.Span);
+            expressionDepth++;
+            try
+            {
+                var bound = ExpressionCore(expression, expected);
+                if (recorder is not null && !IsError(bound.Type))
+                    Record(expression, bound);
+                return bound;
+            }
+            finally
+            {
+                expressionDepth--;
+            }
         }
+
+        /// <summary>How many expressions are being bound, one inside another (see <see cref="Expression"/>).</summary>
+        private int expressionDepth;
 
         /// <summary>What an expression is, for editor services: its type, and the local, parameter or member a name in it means.</summary>
         private void Record(Expr expression, H.Expr bound)
@@ -1103,6 +1120,9 @@ namespace Antril.Binding
         {
             H.Primitive.F64 => H.FloatConstant.Of(literal.Value),
             H.Primitive.F32 => H.FloatConstant.Of((float)literal.Value),
+            // An exponent beyond what any format holds (`1e99999999`, which the lexer reports) is an infinity or a zero:
+            // the double read says which, without raising 10 to it.
+            _ when Lexer.ExponentOutOfRange(LiteralDigits(literal)) => new H.FloatConstant(SoftFloat.FromDouble(literal.Value, FloatFormat.Of(kind.Bits())), kind),
             _ => new H.FloatConstant(SoftFloat.FromText(LiteralDigits(literal), FloatFormat.Of(kind.Bits())), kind),
         };
 
@@ -2073,6 +2093,9 @@ namespace Antril.Binding
                 return Failed("AN2054", $"`{name}` is static: write `{chosen.Method.Owner.Name}.{name}(…)`", nameSpan);
             if (!CrossesDomain(chosen.Method.Owner, chosen.Method, $"`{chosen.Method.Owner.Name}.{name}`", nameSpan))
                 return new H.DefaultExpr(ErrorType);
+            // A value's method that changes the value runs on the place it is called on: not one that cannot change.
+            if (symbol.IsStruct && ReadOnlyReason(receiver, "which") is var (code, reason) && Mutates(chosen.Method))
+                return Failed(code, $"`{name}` changes the value it is called on, {(code == "AN2140" ? reason : "and " + reason)}", nameSpan);
             return new H.CallExpr(receiver, chosen.Method.Token, chosen.TypeArguments, chosen.Arguments, chosen.Result);
         }
 
@@ -2749,32 +2772,23 @@ namespace Antril.Binding
         private H.Expr Place(Expr expression)
         {
             var bound = Expression(expression, null);
-            // A constant, or a field of a constant value, never changes.
-            for (var at = bound; at is H.FieldExpr or H.LocalExpr; at = at is H.FieldExpr { Instance: { } inner } ? inner : null)
-            {
-                if (at is H.LocalExpr { Local: var index } && localConstants.ContainsKey(index)
-                    || at is H.FieldExpr held && binder.FieldOf(held.Field) is { IsConstant: true })
-                    return Failed("AN2140", $"`{source[expression.Span]}` is part of a constant: it never changes", expression.Span);
-            }
+            if (ReadOnlyReason(bound, $"`{source[expression.Span]}`") is var (code, reason))
+                return Failed(code, reason, expression.Span);
             switch (bound)
             {
                 case H.LocalExpr or H.ParamExpr or H.ElementExpr or H.DerefExpr:
                     return bound;
-                case H.FieldExpr field:
-                {
-                    if (binder.FieldOf(field.Field) is not { } fieldSymbol)
-                        return bound;
-                    var symbol = fieldSymbol.Owner;
-                    if (symbol.Definition.Fields[fieldSymbol.Index].Flags.HasFlag(H.FieldFlags.Readonly) && !((method.IsConstructor || method.IsStaticConstructor) && method.Owner == symbol))
-                        return Failed("AN2070", $"`{fieldSymbol.Name}` is readonly: only its constructors set it", expression.Span);
+                case H.FieldExpr:
                     return bound;
-                }
                 case H.ThisExpr when owner.IsStruct:
                     return bound;
                 case H.PropertyExpr property:
                 {
                     if (binder.PropertyOf(property.Property) is { } propertySymbol && propertySymbol.Owner.Definition.Properties[propertySymbol.Index].Setter < 0)
                         return Failed("AN2095", $"`{propertySymbol.Name}` has no `set`", expression.Span);
+                    // A value's setter changes the value it is called on: not one that cannot change.
+                    if (property.Instance is { } held && binder.SymbolOf(held.Type) is { IsStruct: true } && ReadOnlyReason(held, $"`{source[expression.Span]}`") is var (heldCode, heldReason))
+                        return Failed(heldCode, heldReason, expression.Span);
                     if (binder.PropertyOf(property.Property) is { } written && !Allowed(written, true, expression.Span))
                         return new H.DefaultExpr(ErrorType);
                     return bound;
@@ -2785,6 +2799,104 @@ namespace Antril.Binding
                     return Failed("AN2071", "a constant cannot be assigned", expression.Span);
             }
             return Failed("AN2072", "this is not something that can be assigned", expression.Span);
+        }
+
+        /// <summary>
+        /// Why a place cannot change, as a diagnostic (its code and message); null when it can. A constant, or a field of
+        /// a constant value, never changes; a readonly field only in its constructors, and a value held in one changes
+        /// with it: writing a field of that value writes the readonly field.
+        /// </summary>
+        private (string Code, string Message)? ReadOnlyReason(H.Expr bound, string what)
+        {
+            for (var at = bound; at is H.FieldExpr or H.LocalExpr; at = at is H.FieldExpr { Instance: { } inner } ? inner : null)
+            {
+                if (at is H.LocalExpr { Local: var index } && localConstants.ContainsKey(index)
+                    || at is H.FieldExpr held && binder.FieldOf(held.Field) is { IsConstant: true })
+                    return ("AN2140", $"{what} is part of a constant: it never changes");
+            }
+            for (var at = bound; at is H.FieldExpr field && binder.FieldOf(field.Field) is { } fieldSymbol; at = field.Instance)
+            {
+                var symbol = fieldSymbol.Owner;
+                if (symbol.Definition.Fields[fieldSymbol.Index].Flags.HasFlag(H.FieldFlags.Readonly) && !((method.IsConstructor || method.IsStaticConstructor) && method.Owner == symbol))
+                    return ("AN2070", $"`{fieldSymbol.Name}` is readonly: only its constructors set it");
+                if (!symbol.IsStruct)
+                    break; // a field of an object: the object changes, not what holds it
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Whether a value's method changes the value it is called on (so it cannot be called on one that cannot change):
+        /// by what its body says, which is read once. It assigns, counts or borrows (`&amp;mut`) a field of its own or
+        /// `this`, or calls a method of its own that does.
+        /// </summary>
+        private bool Mutates(MethodSymbol method, HashSet<MethodSymbol>? seen = null)
+        {
+            if (method.Mutates is { } known)
+                return known;
+            seen ??= [];
+            if (!seen.Add(method))
+                return false; // calling itself: what else it does decides
+            Node? body = method.Function?.Body ?? (Node?)method.AccessorBody;
+            if (body is null)
+            {
+                method.Mutates = false; // a body the compiler writes (ToString, Equals…) reads
+                return false;
+            }
+            var owner = method.Owner;
+            var parameters = method.ParameterNames.ToHashSet(StringComparer.Ordinal);
+            // Whether a place is part of this value: `this`, a field of its own, or a field of a value held in one (a
+            // field of an object held in one is that object's: changing it leaves this value as it is).
+            bool OwnPlace(Expr target)
+            {
+                bool through = false;
+                while (true)
+                {
+                    switch (target)
+                    {
+                        case NameExpr { Name: "this" }:
+                            return true;
+                        case NameExpr name:
+                            return !parameters.Contains(name.Name) && owner.FindField(name.Name) is { IsStatic: false } field
+                                && (!through || binder.SymbolOf(field.Type) is { IsStruct: true });
+                        case MemberExpr member:
+                            target = member.Target;
+                            through = true;
+                            continue;
+                        case IndexExpr index:
+                            target = index.Target;
+                            through = true;
+                            continue;
+                        default:
+                            return false;
+                    }
+                }
+            }
+            bool mutates = false;
+            foreach (var node in AstRewriter.Descendants(body))
+            {
+                switch (node)
+                {
+                    case AssignExpr assign when OwnPlace(assign.Target):
+                    case UnaryExpr { Operator: UnaryOperator.PreIncrement or UnaryOperator.PreDecrement or UnaryOperator.PostIncrement or UnaryOperator.PostDecrement or UnaryOperator.BorrowMut or UnaryOperator.AddressOf } unary when OwnPlace(unary.Operand):
+                        mutates = true;
+                        break;
+                    case CallExpr { Target: NameExpr { Name: var called, TypeArguments.Length: 0 } } when !parameters.Contains(called):
+                        mutates = owner.FindMethods(called).Any(m => !m.IsStatic && Mutates(m, seen));
+                        break;
+                    case CallExpr { Target: MemberExpr { Target: NameExpr { Name: "this" }, Name: var own } }:
+                        mutates = owner.FindMethods(own).Any(m => !m.IsStatic && Mutates(m, seen));
+                        break;
+                    case CallExpr { Target: MemberExpr { Target: not NameExpr { Name: "this" } } member } when OwnPlace(member.Target) && (member.Target is not NameExpr held || owner.FindField(held.Name) is { } f && binder.SymbolOf(f.Type) is { IsStruct: true }):
+                        // A method of a value held in a field may change that value, and this one with it.
+                        mutates = true;
+                        break;
+                }
+                if (mutates)
+                    break;
+            }
+            method.Mutates = mutates;
+            return mutates;
         }
 
         private H.Expr Assign(AssignExpr assign)
@@ -2875,16 +2987,49 @@ namespace Antril.Binding
             _ => H.BinaryOp.Or,
         };
 
+        private static bool Comparison(BinaryOperator op) => op is BinaryOperator.Equal or BinaryOperator.NotEqual or BinaryOperator.Less
+            or BinaryOperator.LessEqual or BinaryOperator.Greater or BinaryOperator.GreaterEqual;
+
+        /// <summary>
+        /// A binary expression. A chain on the left (<c>a + a + … + a</c>, which the parser nests to the left: the first
+        /// terms deepest) is bound from its first term up in a loop, not by recursion per term, so a chain of a hundred
+        /// thousand terms binds as well as one of three.
+        /// </summary>
         private H.Expr Binary(BinaryExpr binary, H.HirType? expected)
+        {
+            if (binary.Left is not BinaryExpr { Operator: not BinaryOperator.Coalesce } || binary.Operator == BinaryOperator.Coalesce)
+                return BinaryOf(binary, expected, null);
+            // Each node of the chain and the type its left side is bound with (what the node's own left operand expects).
+            var chain = new List<(BinaryExpr Node, H.HirType? Expected)>();
+            Expr at = binary;
+            var wanted = expected;
+            while (at is BinaryExpr { Operator: not BinaryOperator.Coalesce } node)
+            {
+                chain.Add((node, wanted));
+                wanted = node.Operator is BinaryOperator.LogicalAnd or BinaryOperator.LogicalOr ? H.HirType.Bool : Comparison(node.Operator) ? null : wanted;
+                at = node.Left;
+            }
+            var left = Expression(at, wanted);
+            for (int i = chain.Count - 1; i >= 0; i--)
+            {
+                var (node, nodeExpected) = chain[i];
+                left = BinaryOf(node, nodeExpected, left);
+                if (i > 0 && recorder is not null && !IsError(left.Type))
+                    Record(node, left); // the whole chain is recorded by Expression()
+            }
+            return left;
+        }
+
+        /// <summary>A binary expression whose left operand is <paramref name="boundLeft"/> when already bound (a chain).</summary>
+        private H.Expr BinaryOf(BinaryExpr binary, H.HirType? expected, H.Expr? boundLeft)
         {
             var op = binary.Operator;
             if (op is BinaryOperator.LogicalAnd or BinaryOperator.LogicalOr)
-                return new H.BinaryExpr(Hir(op), Condition(binary.Left), Condition(binary.Right), H.HirType.Bool);
+                return new H.BinaryExpr(Hir(op), boundLeft is null ? Condition(binary.Left) : Convert(boundLeft, H.HirType.Bool, binary.Left.Span), Condition(binary.Right), H.HirType.Bool);
             if (op == BinaryOperator.Coalesce)
                 return Coalesce(binary, expected);
-            bool comparison = op is BinaryOperator.Equal or BinaryOperator.NotEqual or BinaryOperator.Less or BinaryOperator.LessEqual
-                or BinaryOperator.Greater or BinaryOperator.GreaterEqual;
-            var left = Expression(binary.Left, comparison ? null : expected);
+            bool comparison = Comparison(op);
+            var left = boundLeft ?? Expression(binary.Left, comparison ? null : expected);
             // `view == [1, 2, 3]`: the literal takes the type the other operand's operator asks for.
             var right = binary.Right is ArrayLiteralExpr && ArrayOperand(op, left.Type, literalOnRight: true) is { } rightArray
                 ? Expression(binary.Right, rightArray)

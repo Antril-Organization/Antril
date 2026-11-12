@@ -300,6 +300,9 @@ namespace Antril.Binding
 
         /// <summary>The type's static constructor: runs once, before the program's <c>Main</c>.</summary>
         public bool IsStaticConstructor { get; init; }
+
+        /// <summary>Whether a value's method changes the value it is called on (read from its body when first asked; null until then).</summary>
+        public bool? Mutates { get; set; }
         public FunctionDecl? Function { get; init; }
         public ConstructorDecl? Constructor { get; init; }
 
