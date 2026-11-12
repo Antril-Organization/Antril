@@ -3501,6 +3501,7 @@ public sealed unsafe class CoreLibraryTests : CheckedTest
             ("ext(i32 n) { public: static S() : i32 => 1; }", "AN1075", "a static function in an instance extension block"),
             ("ext(i32 n) { public: Clash(i32 n) : i32 => n; }", "AN1075", "a parameter named like the receiver"),
             ("static ext(i32 k) { }", "AN0029", "a static extension block with a receiver"),
+            ("F(i32 a) : i32 => $\"" + string.Concat(Enumerable.Repeat("{a}", 3000)) + "\".Length;", "", "a string with 3000 holes (A33: bound without recursion per hole)"),
             ("F() : u8[] => $resource(\"nope\");", "AN2139", "`$resource` naming a resource the program does not have"),
             ("reactive i32 n;", "AN0030", "`reactive` at namespace level"),
             ("value V { public: reactive i32 n; }", "AN0030", "`reactive` in a value"),

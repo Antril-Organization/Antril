@@ -27,6 +27,53 @@ namespace Antril.Syntax
 
         private readonly OperatorTable table;
 
+        /// <summary>
+        /// How many levels of nesting (expressions, statements, types, patterns, members) are open: the parser is
+        /// recursive, and <see cref="MaxNesting"/> keeps a pathological file (`((((…`) from overflowing the stack.
+        /// </summary>
+        private int nesting;
+
+        /// <summary>The deepest nesting a file may have (AN0040 beyond it); well under what the host's stack holds.</summary>
+        public const int MaxNesting = 512;
+
+        /// <summary>Thrown where the nesting passes <see cref="MaxNesting"/>; caught by the statement and member loops.</summary>
+        private sealed class TooDeepException(TextSpan span) : Exception
+        {
+            public TextSpan Span { get; } = span;
+        }
+
+        private void Enter()
+        {
+            if (nesting >= MaxNesting)
+                throw new TooDeepException(Current.Span);
+            nesting++;
+        }
+
+        private void Leave() => nesting--;
+
+        /// <summary>
+        /// After a nesting error: reports it and skips to the end of the statement (its `;`, or a `}` or the end of the file,
+        /// skipping nested braces as a unit) so parsing goes on with the next one.
+        /// </summary>
+        private void RecoverFromTooDeep(TooDeepException deep)
+        {
+            Error("AN0040", $"the code is nested too deeply (more than {MaxNesting} levels): split it", deep.Span);
+            int braces = 0;
+            while (!At(TokenKind.EndOfFile))
+            {
+                if (At(TokenKind.OpenBrace))
+                    braces++;
+                else if (At(TokenKind.CloseBrace) && braces-- == 0)
+                    return;
+                else if (At(TokenKind.Semicolon) && braces == 0)
+                {
+                    Next();
+                    return;
+                }
+                Next();
+            }
+        }
+
         private Parser(SourceText source, List<Token> tokens, DiagnosticBag diagnostics, OperatorTable table)
         {
             this.source = source;
@@ -275,35 +322,61 @@ namespace Antril.Syntax
         /// </summary>
         private List<MemberDecl> ParseMembers(TokenKind end, bool inType)
         {
-            var members = new List<MemberDecl>();
-            var section = inType ? Modifiers.None : sectionAccess;
-            while (!At(end) && !At(TokenKind.EndOfFile))
+            Enter();
+            try
             {
-                if (AccessLabel() is var label and not Modifiers.None)
+                var members = new List<MemberDecl>();
+                var section = inType ? Modifiers.None : sectionAccess;
+                while (!At(end) && !At(TokenKind.EndOfFile))
                 {
-                    section = label;
-                    Next();
-                    Next();
-                    continue;
+                    if (AccessLabel() is var label and not Modifiers.None)
+                    {
+                        section = label;
+                        Next();
+                        Next();
+                        continue;
+                    }
+                    int before = position;
+                    var outer = sectionAccess;
+                    var outerEnclosing = enclosing;
+                    int outerNesting = nesting;
+                    sectionAccess = section;
+                    MemberDecl? member;
+                    try
+                    {
+                        member = ParseMember(inType);
+                    }
+                    catch (TooDeepException deep)
+                    {
+                        enclosing = outerEnclosing;
+                        nesting = outerNesting;
+                        pendingInto = null;
+                        moreMembers.Clear();
+                        RecoverFromTooDeep(deep);
+                        continue;
+                    }
+                    finally
+                    {
+                        sectionAccess = outer;
+                    }
+                    MemberDecl InSection(MemberDecl m) =>
+                        section == Modifiers.None || (m.Modifiers & Modifiers.Access) != 0 || m is NamespaceDecl or EnumMemberDecl ? m : m with { Modifiers = m.Modifiers | section };
+                    if (member is not null)
+                        members.Add(InSection(member));
+                    members.AddRange(moreMembers.Select(InSection));
+                    moreMembers.Clear();
+                    if (position == before)
+                    {
+                        Error("AN0012", $"unexpected {Current}", Current.Span);
+                        Next();
+                    }
                 }
-                int before = position;
-                var outer = sectionAccess;
-                sectionAccess = section;
-                var member = ParseMember(inType);
-                sectionAccess = outer;
-                MemberDecl InSection(MemberDecl m) =>
-                    section == Modifiers.None || (m.Modifiers & Modifiers.Access) != 0 || m is NamespaceDecl or EnumMemberDecl ? m : m with { Modifiers = m.Modifiers | section };
-                if (member is not null)
-                    members.Add(InSection(member));
-                members.AddRange(moreMembers.Select(InSection));
-                moreMembers.Clear();
-                if (position == before)
-                {
-                    Error("AN0012", $"unexpected {Current}", Current.Span);
-                    Next();
-                }
+                return members;
             }
-            return members;
+            finally
+            {
+                Leave();
+            }
         }
 
         private AttributeSyntax[] ParseAttributes()
@@ -1128,6 +1201,19 @@ namespace Antril.Syntax
 
         private TypeSyntax ParseType()
         {
+            Enter();
+            try
+            {
+                return ParseTypeCore();
+            }
+            finally
+            {
+                Leave();
+            }
+        }
+
+        private TypeSyntax ParseTypeCore()
+        {
             int start = position;
             TypeSyntax type;
             if (At(TokenKind.OpenParen))
@@ -1360,7 +1446,17 @@ namespace Antril.Syntax
             while (!At(TokenKind.CloseBrace) && !At(TokenKind.EndOfFile))
             {
                 int before = position;
-                statements.Add(ParseStatement());
+                (int outerNoLambda, int outerTypePatterns, bool outerArm, int outerNesting) = (noLambda, typePatterns, inArm, nesting);
+                try
+                {
+                    statements.Add(ParseStatement());
+                }
+                catch (TooDeepException deep)
+                {
+                    (noLambda, typePatterns, inArm, nesting) = (outerNoLambda, outerTypePatterns, outerArm, outerNesting);
+                    RecoverFromTooDeep(deep);
+                    continue;
+                }
                 if (position == before)
                 {
                     Error("AN0016", $"unexpected {Current}", Current.Span);
@@ -1372,6 +1468,19 @@ namespace Antril.Syntax
         }
 
         private Stmt ParseStatement()
+        {
+            Enter();
+            try
+            {
+                return ParseStatementCore();
+            }
+            finally
+            {
+                Leave();
+            }
+        }
+
+        private Stmt ParseStatementCore()
         {
             int start = position;
             switch (Current.Kind)
@@ -1826,6 +1935,19 @@ namespace Antril.Syntax
 
         private Expr ParseUnary()
         {
+            Enter();
+            try
+            {
+                return ParseUnaryCore();
+            }
+            finally
+            {
+                Leave();
+            }
+        }
+
+        private Expr ParseUnaryCore()
+        {
             int start = position;
             if (Declared(binary: false, prefix: true) is var (declaredSymbol, _, _, declaredTokens))
             {
@@ -2194,7 +2316,18 @@ namespace Antril.Syntax
 
         // ── Patterns ───────────────────────────────────────
 
-        private Pattern ParsePattern() => ParseOrPattern();
+        private Pattern ParsePattern()
+        {
+            Enter();
+            try
+            {
+                return ParseOrPattern();
+            }
+            finally
+            {
+                Leave();
+            }
+        }
 
         /// <summary><c>{ A: p, B: q }</c> after an optional type.</summary>
         private Pattern ParsePropertyPattern(TypeSyntax? type, int start)

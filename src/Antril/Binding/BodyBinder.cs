@@ -839,11 +839,26 @@ namespace Antril.Binding
         /// <summary>An expression; <paramref name="expected"/> types literals (and <c>null</c>, array literals) where it matters.</summary>
         private H.Expr Expression(Expr expression, H.HirType? expected)
         {
-            var bound = ExpressionCore(expression, expected);
-            if (recorder is not null && !IsError(bound.Type))
-                Record(expression, bound);
-            return bound;
+            // Binding recurses per level of the expression; the parser allows no more than its own limit, and this one
+            // keeps a tree made another way (a template, say) from overflowing the stack.
+            if (expressionDepth >= Syntax.Parser.MaxNesting)
+                return Failed("AN2146", $"the expression is nested too deeply (more than {Syntax.Parser.MaxNesting} levels): split it", expression.Span);
+            expressionDepth++;
+            try
+            {
+                var bound = ExpressionCore(expression, expected);
+                if (recorder is not null && !IsError(bound.Type))
+                    Record(expression, bound);
+                return bound;
+            }
+            finally
+            {
+                expressionDepth--;
+            }
         }
+
+        /// <summary>How many expressions are being bound, one inside another (see <see cref="Expression"/>).</summary>
+        private int expressionDepth;
 
         /// <summary>What an expression is, for editor services: its type, and the local, parameter or member a name in it means.</summary>
         private void Record(Expr expression, H.Expr bound)
@@ -2875,16 +2890,49 @@ namespace Antril.Binding
             _ => H.BinaryOp.Or,
         };
 
+        private static bool Comparison(BinaryOperator op) => op is BinaryOperator.Equal or BinaryOperator.NotEqual or BinaryOperator.Less
+            or BinaryOperator.LessEqual or BinaryOperator.Greater or BinaryOperator.GreaterEqual;
+
+        /// <summary>
+        /// A binary expression. A chain on the left (<c>a + a + … + a</c>, which the parser nests to the left: the first
+        /// terms deepest) is bound from its first term up in a loop, not by recursion per term, so a chain of a hundred
+        /// thousand terms binds as well as one of three.
+        /// </summary>
         private H.Expr Binary(BinaryExpr binary, H.HirType? expected)
+        {
+            if (binary.Left is not BinaryExpr { Operator: not BinaryOperator.Coalesce } || binary.Operator == BinaryOperator.Coalesce)
+                return BinaryOf(binary, expected, null);
+            // Each node of the chain and the type its left side is bound with (what the node's own left operand expects).
+            var chain = new List<(BinaryExpr Node, H.HirType? Expected)>();
+            Expr at = binary;
+            var wanted = expected;
+            while (at is BinaryExpr { Operator: not BinaryOperator.Coalesce } node)
+            {
+                chain.Add((node, wanted));
+                wanted = node.Operator is BinaryOperator.LogicalAnd or BinaryOperator.LogicalOr ? H.HirType.Bool : Comparison(node.Operator) ? null : wanted;
+                at = node.Left;
+            }
+            var left = Expression(at, wanted);
+            for (int i = chain.Count - 1; i >= 0; i--)
+            {
+                var (node, nodeExpected) = chain[i];
+                left = BinaryOf(node, nodeExpected, left);
+                if (i > 0 && recorder is not null && !IsError(left.Type))
+                    Record(node, left); // the whole chain is recorded by Expression()
+            }
+            return left;
+        }
+
+        /// <summary>A binary expression whose left operand is <paramref name="boundLeft"/> when already bound (a chain).</summary>
+        private H.Expr BinaryOf(BinaryExpr binary, H.HirType? expected, H.Expr? boundLeft)
         {
             var op = binary.Operator;
             if (op is BinaryOperator.LogicalAnd or BinaryOperator.LogicalOr)
-                return new H.BinaryExpr(Hir(op), Condition(binary.Left), Condition(binary.Right), H.HirType.Bool);
+                return new H.BinaryExpr(Hir(op), boundLeft is null ? Condition(binary.Left) : Convert(boundLeft, H.HirType.Bool, binary.Left.Span), Condition(binary.Right), H.HirType.Bool);
             if (op == BinaryOperator.Coalesce)
                 return Coalesce(binary, expected);
-            bool comparison = op is BinaryOperator.Equal or BinaryOperator.NotEqual or BinaryOperator.Less or BinaryOperator.LessEqual
-                or BinaryOperator.Greater or BinaryOperator.GreaterEqual;
-            var left = Expression(binary.Left, comparison ? null : expected);
+            bool comparison = Comparison(op);
+            var left = boundLeft ?? Expression(binary.Left, comparison ? null : expected);
             // `view == [1, 2, 3]`: the literal takes the type the other operand's operator asks for.
             var right = binary.Right is ArrayLiteralExpr && ArrayOperand(op, left.Type, literalOnRight: true) is { } rightArray
                 ? Expression(binary.Right, rightArray)

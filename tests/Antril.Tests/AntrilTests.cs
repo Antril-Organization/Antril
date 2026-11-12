@@ -31,6 +31,9 @@ public sealed unsafe class AntrilTests : CheckedTest
     public void Frontend_speed_on_a_large_program() => Speed();
 
     [Fact]
+    public void Pathological_programs_end_with_a_diagnostic_or_compile() => Pathological();
+
+    [Fact]
     public void Benchmarks_built_as_executables_give_the_right_results() => Executables();
 
     internal const string Phase3Source = """
@@ -760,6 +763,45 @@ public sealed unsafe class AntrilTests : CheckedTest
         var located = AntrilCompiler.Compile("F() : i32\n{\n    return nope;\n}\n", "where.ant");
         Check("diagnostics say file, line and column", located.Diagnostics.FirstOrDefault()?.ToString().StartsWith("where.ant(3,12): error AN2033", StringComparison.Ordinal) == true,
             located.Diagnostics.FirstOrDefault()?.ToString());
+    }
+
+    /// <summary>
+    /// Programs that used to hang the compiler or overflow its stack (audit 2026-11-12, A30-A33): each ends, with a
+    /// diagnostic when it is wrong or compiled when it is right. Each case runs with a time limit.
+    /// </summary>
+    private void Pathological()
+    {
+        static string Program(string body, string more = "") => "into namespace P {\n" + more + "F(i32 a) : i32 {\n" + body + "\n}\n}\n";
+        string deepType = string.Concat(Enumerable.Repeat("System.Collections.List<", 1000)) + "i32" + new string('>', 1000);
+        (string What, string Source, string Code)[] cases =
+        [
+            ("1000 nested parentheses", Program("return " + new string('(', 1000) + "a" + new string(')', 1000) + ";"), "AN0040"),
+            ("500 nested parentheses", Program("return " + new string('(', 500) + "a" + new string(')', 500) + ";"), ""),
+            ("500 nested calls", Program("return " + string.Concat(Enumerable.Repeat("G(", 500)) + "a" + new string(')', 500) + ";", "G(i32 x) : i32 => x + 1;\n"), ""),
+            ("500 nested blocks", Program(new string('{', 500) + "a = 2;" + new string('}', 500) + " return a;"), ""),
+            ("1000 nested blocks", Program(new string('{', 1000) + "a = 2;" + new string('}', 1000) + " return a;"), "AN0040"),
+            ("500 prefix operators", Program("return " + new string('~', 500) + "a;"), ""),
+            ("2000 prefix operators", Program("return " + new string('~', 2000) + "a;"), "AN0040"),
+            ("a chain of 100000 terms", Program("return " + string.Join(" + ", Enumerable.Repeat("a", 100_000)) + ";"), ""),
+            ("a chain of 50000 comparisons and conditions", Program("return " + string.Join(" && ", Enumerable.Repeat("a < 1", 50_000)) + " ? 1 : 0;"), ""),
+            ("1000 nested type arguments", Program("return a;", deepType + " x;\n"), "AN0040"),
+        ];
+        foreach (var (what, text, code) in cases)
+        {
+            var task = Task.Run(() => AntrilCompiler.Compile(text, "deep.ant"));
+            bool ended = task.Wait(TimeSpan.FromSeconds(60));
+            Check($"{what}: the compiler ends", ended);
+            if (!ended)
+                continue;
+            var result = task.Result;
+            if (code.Length == 0)
+                Check($"{what}: compiles", result.Success, string.Join("; ", result.Diagnostics.Take(3)));
+            else
+                Check($"{what}: {code}", !result.Success && result.Diagnostics.Any(d => d.Code == code), string.Join("; ", result.Diagnostics.Take(3)));
+        }
+        // After a nesting error the rest of the file is read: its other declarations are found.
+        var after = AntrilCompiler.Compile(Program("return a;", deepType + " x;\nH() : i32 => 1;\n") + "into namespace Q { K() : i32 => P.H(); }", "deep.ant");
+        Check("after a nesting error the rest of the file is read (only AN0040 is reported)", after.Diagnostics.Count > 0 && after.Diagnostics.All(d => d.Code == "AN0040"), string.Join("; ", after.Diagnostics.Take(3)));
     }
 
     // ── Speed ──────────────────────────────────────────
