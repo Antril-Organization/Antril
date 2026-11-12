@@ -1634,8 +1634,14 @@ namespace Antril.Syntax
                 {
                     bool outer = inArm;
                     inArm = !At(TokenKind.OpenBrace);
-                    body = ParseStatement();
-                    inArm = outer;
+                    try
+                    {
+                        body = ParseStatement();
+                    }
+                    finally
+                    {
+                        inArm = outer;
+                    }
                 }
                 else
                 {
@@ -1644,6 +1650,11 @@ namespace Antril.Syntax
                 arms.Add(new SwitchArm(pattern, guard, body, From(start)));
                 if (!Accept(TokenKind.Comma) && !statements)
                     break;
+                if (position == start)
+                {
+                    // Nothing was read (a stray `)`, say): the errors are reported; skip the token so the arms go on.
+                    Next();
+                }
             }
             Expect(TokenKind.CloseBrace, "'}'");
             return [.. arms];

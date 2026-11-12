@@ -663,6 +663,7 @@ public sealed unsafe class AntrilTests : CheckedTest
             ("F() { throw; }", "AN2006", "throw; outside a catch"),
             ("F() : i32 { i64 big = 1; i32 small = big; return small; }", "AN2084", "narrowing needs a cast"),
             ("class A { } class B : A { } class C { } F(A a) : bool => a is C;", "AN2088", "a type test that can never hold"),
+            ("F(i32 x) { switch (x) { 1 => return, ) => return, } }", "AN0019", "a stray `)` in a switch arm (the parser went on forever)"),
             ("class Box<T> { } F() { Box<i32> b = new Box<bool>(); }", "AN2084", "a class to the same class with other type arguments (no variance)"),
             ("class Box<T> { } class Derived<T> : Box<T> { } F() { Box<i32> b = new Derived<bool>(); }", "AN2084", "a class to a base with other type arguments"),
             ("class Box<T> { } class Fixed : Box<i32> { } F() { Box<bool> b = new Fixed(); }", "AN2084", "a class whose base fixes the type arguments, to the base with others"),
