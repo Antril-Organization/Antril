@@ -2908,7 +2908,7 @@ public sealed unsafe class CoreLibraryTests : CheckedTest
                 i32 r = 0;
                 str big = LongText(100000, (u8)'a');
                 r += new Regex("a*").Match(big).Length == 100000 ? 1 : 0;
-                r += new Regex(".*").Match(big).Length == 100000 && new Regex("\w+").Match(big).Length == 100000 ? 10 : 0;
+                r += new Regex(".*").Match(big).Length == 100000 && new Regex("\\w+").Match(big).Length == 100000 ? 10 : 0;
                 r += new Regex("a*?b").Match(big + "b").Length == 100001 && new Regex("[^b]{3,}b").Match(big + "b").Length == 100001 ? 100 : 0;
                 r += new Regex("(?:a)*").Match(big).Length == 100000 && new Regex("a+$").Match("b" + big).Index == 1 ? 1000 : 0;
                 r += new Regex("a*ab").Match("xaaab").Value == "aaab" && new Regex("a{2,3}?a").Match("aaaa").Value == "aaa" && new Regex("(a*)(a)").Match("aaa").Group(1) == "aa"
@@ -3449,7 +3449,7 @@ public sealed unsafe class CoreLibraryTests : CheckedTest
         ("Resources", 111, "`System.Resources` with resources installed at run time (Install, Has, Names, Read as `u8[]?`, ReadText as `str?`); the built-in ones (the assembly's, through the `$resources.*` services) are tested by the Hive build"),
         ("Json", 1111111, "`System.Text.JsonValue`: Parse of objects, arrays, strings, numbers, bools and null (Kind, Count, Get/At, AsString/AsNumber/AsBool, IsNull), compact ToString, values built by hand (Set/Add) that round-trip, `\\u` escapes with a surrogate pair, FormatError on bad text"),
         ("Regexes", 11111, "`System.Text.Regex` (backtracking over UTF-8 units): literals, `.`, classes and ranges with negation, `\\d \\w \\s`, anchors, capturing and `(?:)` groups, alternatives, greedy and lazy quantifiers with bounds; IsMatch, Match (Index, Value, Group), Matches, Replace with `$n`"),
-        ("LongRegexes", 11111, "`System.Text.Regex` over 100,000 units: `a*`, `.*`, `\w+`, lazy `a*?b`, `[^b]{3,}b`, `(?:a)*` and `a+$` match without exhausting the stack (a repeated single-unit atom is a loop that backs off by position), and the same greedy/lazy/bounded semantics on short texts"),
+        ("LongRegexes", 11111, "`System.Text.Regex` over 100,000 units: `a*`, `.*`, `\\w+`, lazy `a*?b`, `[^b]{3,}b`, `(?:a)*` and `a+$` match without exhausting the stack (a repeated single-unit atom is a loop that backs off by position), and the same greedy/lazy/bounded semantics on short texts"),
         ("ReactiveErrors", 1111, "an exception thrown inside an effect reaches the assignment that triggered it and leaves the effect runnable (`Reactive.Current` restored, the next change runs it again); one thrown inside `Reactive.Batch` reaches the caller and still runs the batch's effects once"),
         ("ComputedInBatch", 111, "a `computed` read inside `Reactive.Batch` is computed from the current values (not the stale one kept before the batch), while the effects reading it run once at the end"),
         ("Processes", 1111, "`System.Diagnostics.Process`: Run(command, arguments) with the output captured and the exit code, Start + ReadAll + WaitForExit, a program that cannot start throws IOError (cmd on Windows, /bin/sh elsewhere)"),
