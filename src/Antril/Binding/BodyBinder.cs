@@ -813,6 +813,7 @@ namespace Antril.Binding
                 && s.Sections.All(x => Terminates(x.Body)),
             H.UnsafeStmt u => Terminates(u.Body),
             H.RegionStmt r => Terminates(r.Body),
+            H.CheckedStmt c => Terminates(c.Body),
             _ => false,
         };
 
@@ -825,6 +826,7 @@ namespace Antril.Binding
             H.TryStmt t => Breaks(t.Body) || t.Catches.Any(c => Breaks(c.Body)) || t.Finally is { } f && Breaks(f),
             H.UnsafeStmt u => Breaks(u.Body),
             H.RegionStmt r => Breaks(r.Body),
+            H.CheckedStmt c => Breaks(c.Body),
             _ => false,
         };
 
