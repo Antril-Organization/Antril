@@ -1736,6 +1736,66 @@ public sealed unsafe class CoreLibraryTests : CheckedTest
                 return value * 2;
             }
 
+            public NestedParallels() : i32
+            {
+                // Three levels of Parallel.For, each wider than the pool: the callers run the chunks the busy pool cannot.
+                AtomicI32 count = new AtomicI32();
+                Parallel.For(0, 64, i => { Parallel.For(0, 64, j => { Parallel.For(0, 64, k => { count.Increment(); }); }); });
+                i32 r = count.Load() == 262144 ? 1 : 0;
+                // Parallel.For from inside pool work.
+                CountdownEvent done = new CountdownEvent(1);
+                AtomicI32 inner = new AtomicI32();
+                ThreadPool.QueueUserWorkItem(() => { Parallel.For(0, 100, i => { inner.Increment(); }); done.Signal(); });
+                done.Wait();
+                r += inner.Load() == 100 ? 10 : 0;
+                // An error thrown in a nested loop comes back through both.
+                bool failed = false;
+                try { Parallel.For(0, 8, i => { Parallel.For(0, 8, j => { if (i == 3 && j == 5) throw new InvalidOperationError("three-five"); }); }); }
+                catch (InvalidOperationError e) { failed = e.Message == "three-five"; }
+                return r + (failed ? 100 : 0);
+            }
+
+            public class Spinner
+            {
+                public:
+                    i32 Turns;
+                    bool Stop;
+                    async Spin() : Task
+                    {
+                        loop (!Stop)
+                        {
+                            Turns++;
+                            await Task.Yield();
+                        }
+                    }
+            }
+
+            public async StopAfter(Spinner s, i32 milliseconds) : Task<i32>
+            {
+                await Task.Delay(milliseconds);
+                s.Stop = true;
+                return s.Turns;
+            }
+
+            public DelayWhileYielding() : i32
+            {
+                // A task that yields in a loop must not keep a Task.Delay from finishing.
+                Spinner s = new Spinner();
+                Task spin = s.Spin();
+                i32 turns = StopAfter(s, 20).Result;
+                spin.Wait();
+                i32 r = turns > 0 && spin.IsCompleted && s.Turns == turns ? 1 : 0;
+                // Two delays due in order while another task yields.
+                Spinner s2 = new Spinner();
+                Task spin2 = s2.Spin();
+                Task<i32> late = StopAfter(s2, 30);
+                i32 early = StopAfter(s2, 5).Result;
+                s2.Stop = false;
+                i32 after = late.Result;
+                spin2.Wait();
+                return r + (early > 0 && after > early ? 10 : 0);
+            }
+
             public TaskRuns() : i32
             {
                 Task<i32> sum = Task.Run<i32>(() => { i32 s = 0; loop (i32 i = 0..100) s += i; return s; });
@@ -2785,6 +2845,80 @@ public sealed unsafe class CoreLibraryTests : CheckedTest
                 return r;
             }
 
+            static LongText(i32 length, u8 unit) : str
+            {
+                u8[] units = new u8[length];
+                loop (i32 i = 0..length)
+                    units[i] = unit;
+                return new String<u8>(units);
+            }
+
+            public LongRegexes() : i32
+            {
+                i32 r = 0;
+                str big = LongText(100000, (u8)'a');
+                r += new Regex("a*").Match(big).Length == 100000 ? 1 : 0;
+                r += new Regex(".*").Match(big).Length == 100000 && new Regex("\w+").Match(big).Length == 100000 ? 10 : 0;
+                r += new Regex("a*?b").Match(big + "b").Length == 100001 && new Regex("[^b]{3,}b").Match(big + "b").Length == 100001 ? 100 : 0;
+                r += new Regex("(?:a)*").Match(big).Length == 100000 && new Regex("a+$").Match("b" + big).Index == 1 ? 1000 : 0;
+                r += new Regex("a*ab").Match("xaaab").Value == "aaab" && new Regex("a{2,3}?a").Match("aaaa").Value == "aaa" && new Regex("(a*)(a)").Match("aaa").Group(1) == "aa"
+                    && new Regex("a{2,3}").Match("aaaa").Value == "aaa" && new Regex(".*?x").Match("abxcx").Value == "abx" && !new Regex("a{2}b").IsMatch("ab") ? 10000 : 0;
+                return r;
+            }
+
+            class ReactFragile
+            {
+                public:
+                    static i32 Runs;
+                    static i32 Seen;
+
+                    reactive i32 count = 1;
+                    reactive bool fail = false;
+                    computed i32 Double => count * 2;
+            }
+
+            public ReactiveErrors() : i32
+            {
+                i32 r = 0;
+                ReactFragile f = new ReactFragile();
+                effect { ReactFragile.Runs++; if (f.fail) throw new InvalidOperationError("effect"); ReactFragile.Seen = f.count; }
+                bool caught = false;
+                try { f.fail = true; } catch (InvalidOperationError e) { caught = true; }
+                r += caught && ReactFragile.Runs == 2 && System.Reactive.Reactive.Current == null ? 1 : 0;
+                f.fail = false;
+                f.count = 2;
+                r += ReactFragile.Runs == 4 && ReactFragile.Seen == 2 ? 10 : 0;
+                caught = false;
+                try { System.Reactive.Reactive.Batch(() => { f.count = 3; throw new InvalidOperationError("batch"); }); } catch (InvalidOperationError e) { caught = true; }
+                r += caught && ReactFragile.Runs == 5 && ReactFragile.Seen == 3 ? 100 : 0;
+                f.count = 4;
+                r += ReactFragile.Runs == 6 && ReactFragile.Seen == 4 ? 1000 : 0;
+                return r;
+            }
+
+            class ReactSummed
+            {
+                public:
+                    static i32 Runs;
+                    static i32 Seen;
+
+                    reactive i32 count = 1;
+                    computed i32 Double => count * 2;
+            }
+
+            public ComputedInBatch() : i32
+            {
+                i32 r = 0;
+                ReactSummed s = new ReactSummed();
+                r += s.Double == 2 ? 1 : 0;
+                effect { ReactSummed.Runs++; ReactSummed.Seen = s.Double; }
+                i32 inside = 0;
+                System.Reactive.Reactive.Batch(() => { s.count = 5; inside = s.Double; s.count = 6; inside += s.Double; });
+                r += inside == 22 ? 10 : 0;
+                r += ReactSummed.Runs == 2 && ReactSummed.Seen == 12 && s.Double == 12 ? 100 : 0;
+                return r;
+            }
+
             public Regexes() : i32
             {
                 i32 r = 0;
@@ -3233,6 +3367,8 @@ public sealed unsafe class CoreLibraryTests : CheckedTest
         ("Syncs", 111111, "SemaphoreSlim keeps two inside, CountdownEvent, ManualResetEvent and AutoResetEvent, BlockingCollection, Condition timeout"),
         ("Parallels", 11111, "Parallel.For (sums, Interlocked on array elements, an error thrown back), Parallel.Invoke, ConcurrentQueue"),
         ("TaskRuns", 11111, "Task.Run with and without a result, await of a pool task, WhenAll, a task waiting for another on the pool, a failed one"),
+        ("NestedParallels", 111, "Parallel.For nested three levels wider than the pool, from inside pool work, and an error thrown back through two levels (the caller runs the chunks a busy pool cannot: no starvation)"),
+        ("DelayWhileYielding", 11, "Task.Delay finishes while another task keeps yielding (`await Task.Yield()` in a loop); two delays due in order"),
         ("Operators", 11111, "operators a value type declares (`op +`, unary `-` and `!`, `==`, `<`, `+=`; `!=` from `==`), and an enum's ToString"),
         ("Dates", 1111111, "DateTime: day of week, AddMonths/AddYears at month ends, differences, leap years, Unix time, parts, a date that does not exist"),
         ("TimeSpans", 1111111, "TimeSpan: From*, parts, + - unary - * /, ToString c/g/custom, Parse and TryParse"),
@@ -3262,6 +3398,9 @@ public sealed unsafe class CoreLibraryTests : CheckedTest
         ("Resources", 111, "`System.Resources` with resources installed at run time (Install, Has, Names, Read as `u8[]?`, ReadText as `str?`); the built-in ones (the assembly's, through the `$resources.*` services) are tested by the Hive build"),
         ("Json", 1111111, "`System.Text.JsonValue`: Parse of objects, arrays, strings, numbers, bools and null (Kind, Count, Get/At, AsString/AsNumber/AsBool, IsNull), compact ToString, values built by hand (Set/Add) that round-trip, `\\u` escapes with a surrogate pair, FormatError on bad text"),
         ("Regexes", 11111, "`System.Text.Regex` (backtracking over UTF-8 units): literals, `.`, classes and ranges with negation, `\\d \\w \\s`, anchors, capturing and `(?:)` groups, alternatives, greedy and lazy quantifiers with bounds; IsMatch, Match (Index, Value, Group), Matches, Replace with `$n`"),
+        ("LongRegexes", 11111, "`System.Text.Regex` over 100,000 units: `a*`, `.*`, `\w+`, lazy `a*?b`, `[^b]{3,}b`, `(?:a)*` and `a+$` match without exhausting the stack (a repeated single-unit atom is a loop that backs off by position), and the same greedy/lazy/bounded semantics on short texts"),
+        ("ReactiveErrors", 1111, "an exception thrown inside an effect reaches the assignment that triggered it and leaves the effect runnable (`Reactive.Current` restored, the next change runs it again); one thrown inside `Reactive.Batch` reaches the caller and still runs the batch's effects once"),
+        ("ComputedInBatch", 111, "a `computed` read inside `Reactive.Batch` is computed from the current values (not the stale one kept before the batch), while the effects reading it run once at the end"),
         ("Processes", 1111, "`System.Diagnostics.Process`: Run(command, arguments) with the output captured and the exit code, Start + ReadAll + WaitForExit, a program that cannot start throws IOError (cmd on Windows, /bin/sh elsewhere)"),
         ("Network", 111, "`System.Net`: a TcpListener on a port the system picks, a TcpClient that connects to it, an echo through NetworkStream from a thread, and HttpClient.Get against a one-request HTTP server on another thread (status 200, body)"),
         ("Exchange", 1111, "`System.Exchange`: packets (native memory, length + bytes) that carry strings and bytes between GC domains by copy: Pack(str)/PackBytes(u8[]), Length, Text and Bytes (which copy into this domain and free the packet), the empty packet"),
