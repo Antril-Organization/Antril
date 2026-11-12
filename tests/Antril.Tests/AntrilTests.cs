@@ -359,6 +359,22 @@ public sealed unsafe class AntrilTests : CheckedTest
                 return y * 1000 + z;
             }
 
+            Pick(i32 x) : i32 => 1;
+            Pick(i64 x) : i32 => 2;
+            Pick(f64 x) : i32 => 3;
+            Near(i64 x) : i32 => 1;
+            Near(f64 x) : i32 => 2;
+            Wide(u64 x) : i32 => 1;
+            Wide(i128 x) : i32 => 2;
+
+            public Overloads() : i32
+            {
+                i16 s = 3;
+                u8 b = 4;
+                u32 u = 5;
+                return Pick(s) * 1000 + Pick(b) * 100 + Near(s) * 10 + Wide(u);
+            }
+
             public Main() : i32 => Sum(10);
         }
         """;
@@ -390,6 +406,7 @@ public sealed unsafe class AntrilTests : CheckedTest
         ("Fields", null, 92, "field initializers run in the implicit constructor"),
         ("Numbers", null, 3000000310, "implicit widening, literals typed by context, casts"),
         ("Wraps", null, 43872, "u8 and i8 arithmetic wraps around"),
+        ("Overloads", null, 1111, "the nearest wider integer wins: i16 takes i32 over i64 (and f64), u32 takes u64 over i128"),
     ];
 
     private void Programs()
@@ -773,6 +790,9 @@ public sealed unsafe class AntrilTests : CheckedTest
             ("public value A { B b; } public value B { A a; }", "AN1106", "a value that holds itself through another value"),
             ("public value W<T> { T item; } public value S { W<S> w; }", "AN1106", "a value that holds itself through a generic value"),
             ("public value W<T> { T item; } public value S { W<i32> w; S? maybe; S[] many; }", "", "a value holding other values, a nullable and an array of itself"),
+            ("F(i32 x) : i32 => 1; F(i64 x) : i32 => 2; G() : i32 { i16 s = 3; return F(s); }", "", "F(i16) with F(i32) and F(i64) is not ambiguous"),
+            ("F(i64 x) : i32 => 1; F(f64 x) : i32 => 2; G() : i32 { i16 s = 3; return F(s); }", "", "nor with F(i64) and F(f64)"),
+            ("F(i16 x) : i32 => 1; F(u16 x) : i32 => 2; G() : i32 { u8 s = 3; return F(s); }", "AN2058", "F(u8) with F(i16) and F(u16): the same width, still ambiguous"),
         ];
         foreach (var (text, code, what) in wrong)
         {

@@ -3704,11 +3704,30 @@ namespace Antril.Binding
         /// 1 for a widening (numbers, a class to its base, a value to its nullable type, a literal that fits); null when it
         /// does not convert implicitly.
         /// </summary>
-        /// <summary>What a 128-bit (3) or 256-bit (5) integer adds to a conversion's cost, so narrower targets come first.</summary>
-        private static int WideCost(H.Primitive kind) => kind.Bits() switch { 128 => 3, 256 => 5, _ => 0 };
+        /// <summary>
+        /// Costs are in units of 4, so a widening's distance (how many widths up the target is) tells two widenings apart
+        /// without reordering the kinds: a widening to the next width (4) comes before one two widths up (5), both before
+        /// a conversion to a float (8), a wide integer (16+) or `any` (36).
+        /// </summary>
+        private const int Unit = 4;
+
+        /// <summary>What a 128-bit (12) or 256-bit (20) integer adds to a conversion's cost, so narrower targets come first.</summary>
+        private static int WideCost(H.Primitive kind) => kind.Bits() switch { 128 => 3 * Unit, 256 => 5 * Unit, _ => 0 };
 
         /// <summary>A float literal's distance from f64: f32, then f16, then the wide floats.</summary>
-        private static int FloatCost(H.Primitive kind) => kind.Bits() switch { 64 => 0, 32 => 1, 16 => 2, 128 => 3, _ => 5 };
+        private static int FloatCost(H.Primitive kind) => kind.Bits() switch { 64 => 0, 32 => Unit, 16 => 2 * Unit, 128 => 3 * Unit, _ => 5 * Unit };
+
+        /// <summary>
+        /// How many widths above <paramref name="from"/> the integer <paramref name="to"/> is, past the first (0 for the
+        /// next width up, 1 for the one after it…): `F(i16)` takes `F(i32)` over `F(i64)`, the nearest that holds it.
+        /// </summary>
+        private static int WidthSteps(H.Primitive from, H.Primitive to)
+        {
+            int steps = 0;
+            for (int bits = from.Bits() * 2; bits < to.Bits(); bits *= 2)
+                steps++;
+            return Math.Min(steps, Unit - 1);
+        }
 
         private int? Cost(H.Expr value, H.HirType target)
         {
@@ -3718,71 +3737,71 @@ namespace Antril.Binding
             if (from == target)
                 return 0;
             if (value is H.LiteralExpr { Value: H.NullConstant })
-                return target is H.NullableType or H.PointerType ? 1 : null;
+                return target is H.NullableType or H.PointerType ? Unit : null;
             // Any pointer is a `void*`.
             if (from is H.PointerType && target is H.PointerType { Target: var pointee } && pointee == H.HirType.Void)
-                return 1;
+                return Unit;
             // An integer type parameter: literals that fit all its types; to a number all its types widen to.
             if (NumericParam(target) is { } targetKinds)
             {
                 if (value is H.LiteralExpr { Value: H.IntegerConstant literal })
-                    return targetKinds.Where(k => k.IsInteger()).All(k => Binder.Fits(literal.Value, k)) ? 1 : null;
+                    return targetKinds.Where(k => k.IsInteger()).All(k => Binder.Fits(literal.Value, k)) ? Unit : null;
                 if (value is H.LiteralExpr { Value: H.FloatConstant })
-                    return targetKinds.All(k => k.IsFloat()) ? 1 : null;
+                    return targetKinds.All(k => k.IsFloat()) ? Unit : null;
                 // A primitive every one of its types holds (`T : float` takes an f32).
-                return from is H.PrimitiveType { Kind: var narrow } && targetKinds.All(k => Widens(narrow, k)) ? 2 : null;
+                return from is H.PrimitiveType { Kind: var narrow } && targetKinds.All(k => Widens(narrow, k)) ? 2 * Unit : null;
             }
             // A type parameter's value to `any`: boxed the way its type is once known (an object stays itself).
             if (from is H.GenericParamType && (IsAny(target) || target is H.NullableType { Inner: var anyInner } && IsAny(anyInner)))
-                return 2;
+                return 2 * Unit;
             if (Opaque(from) && (IsAny(target) || target is H.NullableType { Inner: var opaqueInner } && IsAny(opaqueInner)) && BoxedSymbol() is not null)
-                return 3;
+                return 3 * Unit;
             if (NumericParam(from) is { } fromKinds)
-                return target is H.PrimitiveType { Kind: var wide } && fromKinds.All(k => Widens(k, wide)) ? 1 : null;
+                return target is H.PrimitiveType { Kind: var wide } && fromKinds.All(k => Widens(k, wide)) ? Unit : null;
             if (value is H.LiteralExpr { Value: H.IntegerConstant integer } && target is H.PrimitiveType { Kind: var tk })
                 // A literal prefers i32, then a wider signed integer, then an unsigned one, then a float (`Max(3, 9)` takes the
                 // i32 overload, `WriteLine(42)` the i64 one when there is no i32).
                 // (a 128- or 256-bit integer comes after the floats: `F(5)` with F(i64) and F(i128) takes the i64 one).
-                return tk.IsInteger() ? Binder.Fits(integer.Value, tk) ? tk == H.Primitive.I32 ? 1 : (tk.IsSigned() ? 2 : 3) + WideCost(tk) : null : tk.IsFloat() ? 4 + FloatCost(tk) : null;
+                return tk.IsInteger() ? Binder.Fits(integer.Value, tk) ? tk == H.Primitive.I32 ? Unit : (tk.IsSigned() ? 2 * Unit : 3 * Unit) + WideCost(tk) : null : tk.IsFloat() ? 4 * Unit + FloatCost(tk) : null;
             if (from is H.PrimitiveType { Kind: var fk } && target is H.PrimitiveType { Kind: var k })
             {
                 if (fk.IsInteger() && k.IsInteger())
                 {
-                    // The nearest width wins: a u32 goes to u64 before u128 (and to f64 before a wide integer).
+                    // The nearest width wins: an i16 goes to i32 before i64, a u32 to u64 before u128 (and to f64 before a wide integer).
                     if (fk.IsSigned() == k.IsSigned())
-                        return k.Bits() > fk.Bits() ? 1 + WideCost(k) : null;
-                    return !fk.IsSigned() && k.IsSigned() && k.Bits() > fk.Bits() ? 1 + WideCost(k) : null;
+                        return k.Bits() > fk.Bits() ? Unit + WidthSteps(fk, k) + WideCost(k) : null;
+                    return !fk.IsSigned() && k.IsSigned() && k.Bits() > fk.Bits() ? Unit + WidthSteps(fk, k) + WideCost(k) : null;
                 }
                 if (fk.IsInteger() && k.IsFloat())
-                    return fk.Bits() > 64 ? null : 2; // a wide integer loses digits in a float: only with a cast
+                    return fk.Bits() > 64 ? null : 2 * Unit; // a wide integer loses digits in a float: only with a cast
                 if (fk.IsFloat() && k.IsFloat())
-                    return k.Bits() > fk.Bits() ? 1 + WideCost(k) : null;
+                    return k.Bits() > fk.Bits() ? Unit + WidthSteps(fk, k) + WideCost(k) : null;
                 return null;
             }
             // A value to a nullable of a wider value (`i64? x = 3`): widened, then wrapped.
             if (target is H.NullableType { Inner: var valueInner } && from is not H.NullableType && valueInner != from && !IsReference(valueInner))
-                return Cost(value, valueInner) is int widening ? widening + 1 : null;
+                return Cost(value, valueInner) is int widening ? widening + Unit : null;
             var fromInner = from is H.NullableType fn ? fn.Inner : from;
             var targetInner = target is H.NullableType tn ? tn.Inner : target;
             if (from is H.NullableType && target is not H.NullableType)
                 return null;
             // A class to itself or a base, with the same type arguments (a `Box<str>` is not a `Box<i32>`: there is no variance).
             if (binder.SymbolOf(targetInner) is { IsClass: true } tc && Ancestor(fromInner, tc) is var (ancestor, depth) && ancestor == targetInner)
-                return depth + (from is H.NullableType == target is H.NullableType ? 0 : 1);
+                return depth * Unit + (from is H.NullableType == target is H.NullableType ? 0 : Unit);
             if (target is H.NullableType && fromInner == targetInner)
-                return 1;
-            int wrap = from is H.NullableType == target is H.NullableType ? 0 : 1;
+                return Unit;
+            int wrap = from is H.NullableType == target is H.NullableType ? 0 : Unit;
             // An object to an interface it implements, or an interface to `any`: the same handle.
             if (IsInterface(targetInner) && IsReference(fromInner) && binder.Implements(fromInner, (H.NamedType)targetInner, ConstraintsOf))
-                return 1 + wrap;
+                return Unit + wrap;
             if (IsAny(targetInner) && IsInterface(fromInner))
-                return 1 + wrap;
+                return Unit + wrap;
             // A value to an interface it implements: boxed; to `any`: boxed, after every numeric widening (`WriteLine(42)`
             // takes the i64 overload, `WriteLine(point)` the `any` one).
             if (IsValueType(fromInner) && from is not H.NullableType && IsInterface(targetInner) && binder.Implements(fromInner, (H.NamedType)targetInner, ConstraintsOf))
-                return 2 + wrap;
+                return 2 * Unit + wrap;
             if (IsValueType(fromInner) && from is not H.NullableType && IsAny(targetInner))
-                return 9 + wrap;
+                return 9 * Unit + wrap;
             return null;
         }
 
