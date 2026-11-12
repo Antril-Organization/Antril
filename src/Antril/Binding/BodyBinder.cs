@@ -848,17 +848,11 @@ namespace Antril.Binding
             if (expressionDepth >= Syntax.Parser.MaxNesting)
                 return Failed("AN2146", $"the expression is nested too deeply (more than {Syntax.Parser.MaxNesting} levels): split it", expression.Span);
             expressionDepth++;
-            try
-            {
-                var bound = ExpressionCore(expression, expected);
-                if (recorder is not null && !IsError(bound.Type))
-                    Record(expression, bound);
-                return bound;
-            }
-            finally
-            {
-                expressionDepth--;
-            }
+            var bound = ExpressionCore(expression, expected);
+            expressionDepth--;
+            if (recorder is not null && !IsError(bound.Type))
+                Record(expression, bound);
+            return bound;
         }
 
         /// <summary>How many expressions are being bound, one inside another (see <see cref="Expression"/>).</summary>

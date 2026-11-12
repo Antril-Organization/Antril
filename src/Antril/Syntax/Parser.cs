@@ -49,8 +49,6 @@ namespace Antril.Syntax
             nesting++;
         }
 
-        private void Leave() => nesting--;
-
         /// <summary>
         /// After a nesting error: reports it and skips to the end of the statement (its `;`, or a `}` or the end of the file,
         /// skipping nested braces as a unit) so parsing goes on with the next one.
@@ -323,7 +321,6 @@ namespace Antril.Syntax
         private List<MemberDecl> ParseMembers(TokenKind end, bool inType)
         {
             Enter();
-            try
             {
                 var members = new List<MemberDecl>();
                 var section = inType ? Modifiers.None : sectionAccess;
@@ -371,11 +368,8 @@ namespace Antril.Syntax
                         Next();
                     }
                 }
+                nesting--;
                 return members;
-            }
-            finally
-            {
-                Leave();
             }
         }
 
@@ -1201,15 +1195,11 @@ namespace Antril.Syntax
 
         private TypeSyntax ParseType()
         {
+            // No try/finally (it costs in this hot path): where a TooDeepException is caught, the count is restored.
             Enter();
-            try
-            {
-                return ParseTypeCore();
-            }
-            finally
-            {
-                Leave();
-            }
+            var parsed = ParseTypeCore();
+            nesting--;
+            return parsed;
         }
 
         private TypeSyntax ParseTypeCore()
@@ -1469,15 +1459,11 @@ namespace Antril.Syntax
 
         private Stmt ParseStatement()
         {
+            // No try/finally (it costs in this hot path): where a TooDeepException is caught, the count is restored.
             Enter();
-            try
-            {
-                return ParseStatementCore();
-            }
-            finally
-            {
-                Leave();
-            }
+            var parsed = ParseStatementCore();
+            nesting--;
+            return parsed;
         }
 
         private Stmt ParseStatementCore()
@@ -1935,15 +1921,11 @@ namespace Antril.Syntax
 
         private Expr ParseUnary()
         {
+            // No try/finally (it costs in this hot path): where a TooDeepException is caught, the count is restored.
             Enter();
-            try
-            {
-                return ParseUnaryCore();
-            }
-            finally
-            {
-                Leave();
-            }
+            var parsed = ParseUnaryCore();
+            nesting--;
+            return parsed;
         }
 
         private Expr ParseUnaryCore()
@@ -2318,15 +2300,11 @@ namespace Antril.Syntax
 
         private Pattern ParsePattern()
         {
+            // No try/finally (it costs in this hot path): where a TooDeepException is caught, the count is restored.
             Enter();
-            try
-            {
-                return ParseOrPattern();
-            }
-            finally
-            {
-                Leave();
-            }
+            var parsed = ParseOrPattern();
+            nesting--;
+            return parsed;
         }
 
         /// <summary><c>{ A: p, B: q }</c> after an optional type.</summary>
