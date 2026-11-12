@@ -1084,6 +1084,29 @@ public sealed unsafe class CoreLibraryTests : CheckedTest
                 return r + (none ?? 2) * 100000000;
             }
 
+            public ParseLimits() : i32
+            {
+                i32 r = 0;
+                r += Int32.TryParse("4294967297") == null ? 1 : 0;
+                r += Int32.TryParse("2147483648") == null ? 2 : 0;
+                r += (Int32.TryParse("-2147483648") ?? 0) == Int32.MinValue ? 4 : 0;
+                r += (Int32.TryParse("2147483647") ?? 0) == Int32.MaxValue ? 8 : 0;
+                r += Int64.TryParse("9223372036854775808") == null ? 16 : 0;
+                r += Int64.TryParse("-9223372036854775809") == null ? 32 : 0;
+                r += (Int64.TryParse("-9223372036854775808") ?? 0) == Int64.MinValue ? 64 : 0;
+                r += (Int64.TryParse("9223372036854775807") ?? 0) == Int64.MaxValue ? 128 : 0;
+                r += Int64.TryParse("-") == null && Int64.TryParse("") == null && (Int64.TryParse("-0") ?? 1) == 0 ? 256 : 0;
+                r += (UInt128.TryParse("340282366920938463463374607431768211455") ?? 0u128) == UInt128.MaxValue ? 512 : 0;
+                r += UInt128.TryParse("340282366920938463463374607431768211456") == null ? 1024 : 0;
+                r += (Int128.TryParse("-170141183460469231731687303715884105728") ?? 0i128) == Int128.MinValue ? 2048 : 0;
+                r += Int128.TryParse("170141183460469231731687303715884105728") == null ? 4096 : 0;
+                r += (Int256.TryParse("-57896044618658097711785492504343953926634992332820282019728792003956564819968") ?? 0i256) == Int256.MinValue ? 8192 : 0;
+                r += UInt256.TryParse("115792089237316195423570985008687907853269984665640564039457584007913129639936") == null ? 16384 : 0;
+                r += (UInt256.TryParse("115792089237316195423570985008687907853269984665640564039457584007913129639935") ?? 0u256) == UInt256.MaxValue ? 32768 : 0;
+                try { Int32.Parse("4294967297"); } catch (FormatError e) { r += 65536; }
+                return r;
+            }
+
             public class Registry
             {
                 public:
@@ -3196,6 +3219,7 @@ public sealed unsafe class CoreLibraryTests : CheckedTest
         ("Functional", 755531115, "List: Where, Select, Any, All, CountWhere, Aggregate, First, RemoveAll"),
         ("SortBy", 3251111, "List.Sort and Array.Sort with a comparison, Array.ForEach, FindIndex"),
         ("Nullables", 207511123, "nullable values: TryParse, `??`, `== null`, HasValue, Value, `is T v`"),
+        ("ParseLimits", 131071, "integer Parse/TryParse at the limits: MinValue and MaxValue of i32, i64, i128, u128, i256, u256 parse, one past them is null, Int32.Parse throws a FormatError"),
         ("Statics", 151711, "static constructors (in dependency order), nested types (of a generic type too), `++` on a static field"),
         ("Conditional", 1608534, "`?.` on fields, calls and strings, chained, with `??`"),
         ("Captures", 128912, "lambdas in loops: each pass's variables, a variable shared outside the loop"),
