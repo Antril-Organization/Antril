@@ -3544,6 +3544,268 @@ public sealed unsafe class CoreLibraryTests : CheckedTest
                 return r + (memory.CanSeek && new BufferedStream(memory).CanSeek ? 100000000 : 0);
             }
 
+            static class Many
+            {
+                public:
+                    static Source Shared = new Source();
+                    static i32 Value;
+                    static i64 Total;
+                    static i32 Last;
+                    static i32 Wrong;
+                    static i32 Evals;
+
+                    static Write(i32 value)
+                    {
+                        Value = value;
+                        Last = -1;
+                        Shared.Notify();
+                    }
+            }
+
+            /// One Source read twice by each of 4,000 effects: they all run on each write, in the order they began to observe.
+            public ManyObservers() : i32
+            {
+                i32 r = 0;
+                List<Effect> effects = new List<Effect>();
+                Many.Last = -1;
+                loop (i32 i = 0..4000)
+                {
+                    i32 me = i;
+                    effects.Add(Reactive.Watch(() =>
+                    {
+                        Many.Shared.Track();
+                        Many.Total += Many.Value;
+                        Many.Shared.Track();
+                        if (me <= Many.Last)
+                            Many.Wrong++;
+                        Many.Last = me;
+                    }));
+                }
+                loop (i32 w = 1..6)
+                    Many.Write(w);
+                r += Many.Total == 60000 && Many.Wrong == 0 && Many.Shared.Observers == 4000 && effects[17].Sources == 1 ? 1 : 0;
+                // Three of four stop: the rest still run, in order, once each.
+                loop (i32 i = 0..4000)
+                {
+                    if (i % 4 != 0)
+                        effects[i].Dispose();
+                }
+                Many.Write(6);
+                r += Many.Total == 66000 && Many.Wrong == 0 && Many.Shared.Observers == 1000 && effects[1].Sources == 0 ? 10 : 0;
+                // New observers (run at once with 6) come after the ones there.
+                loop (i32 i = 0..10)
+                {
+                    i32 me = 4000 + i;
+                    effects.Add(effect { Many.Shared.Track(); Many.Total += Many.Value; if (me <= Many.Last) Many.Wrong++; Many.Last = me; });
+                }
+                Many.Write(7);
+                r += Many.Total == 73130 && Many.Wrong == 0 && Many.Shared.Observers == 1010 ? 100 : 0;
+                // In a batch each runs once, at the end, with the last value.
+                Reactive.Batch(() => { Many.Write(8); Many.Write(9); });
+                r += Many.Total == 82220 && Many.Wrong == 0 ? 1000 : 0;
+                // One effect reading 20 sources twice each: 20 sources, one observer each; a change of one runs it once.
+                List<Source> sources = new List<Source>();
+                loop (i32 i = 0..20)
+                    sources.Add(new Source());
+                i32 runs = 0;
+                Effect wide = effect
+                {
+                    runs++;
+                    loop (i32 k = 0..2)
+                    {
+                        loop (i32 i = 0..20)
+                            sources[i].Track();
+                    }
+                };
+                sources[13].Notify();
+                r += runs == 2 && wide.Sources == 20 && sources[0].Observers == 1 && sources[19].Observers == 1 ? 10000 : 0;
+                wide.Dispose();
+                r += wide.Sources == 0 && sources[5].Observers == 0 ? 100000 : 0;
+                // An effect started inside another reads the same Source in between: the outer one still has it once.
+                Source s = new Source();
+                Effect? inner = null;
+                Effect outer = effect
+                {
+                    s.Track();
+                    if (inner == null)
+                        inner = effect { s.Track(); };
+                    s.Track();
+                };
+                r += outer.Sources == 1 && s.Observers == 2 ? 1000000 : 0;
+                // 100 computeds read inside a batch after their source changed: each computed once, its effect once at the end.
+                List<Computed<i32>> computeds = new List<Computed<i32>>();
+                i32 runs2 = 0;
+                loop (i32 i = 0..100)
+                {
+                    i32 k = i;
+                    Computed<i32> c = new Computed<i32>(() => { Many.Shared.Track(); Many.Evals++; return Many.Value + k; });
+                    computeds.Add(c);
+                    effect { runs2 += c.Value > 0 ? 1 : 0; };
+                }
+                i32 evals = Many.Evals;
+                i32 effectRuns = runs2;
+                i32 sum = 0;
+                Reactive.Batch(() =>
+                {
+                    Many.Write(100);
+                    loop (i32 i = 0..100)
+                        sum += computeds[i].Value;
+                });
+                r += sum == 14950 && Many.Evals - evals == 100 && runs2 - effectRuns == 100 && computeds[99].Value == 199 && Many.Evals - evals == 100 ? 10000000 : 0;
+                return r;
+            }
+
+            /// Wide integers to text and back: 19 digits per part, with zeros inside the parts, at every power of ten.
+            public WideTextRoundTrip() : i32
+            {
+                i32 r = 0;
+                bool same = true;
+                u256 p = 1;
+                loop (i32 i = 0..78)
+                {
+                    same = same && UInt256.Parse((p - 1).ToString()) == p - 1 && UInt256.Parse(p.ToString()) == p && UInt256.Parse((p + 1).ToString()) == p + 1;
+                    same = same && Int256.Parse((-(i256)p).ToString()) == -(i256)p && (p + 1).ToString().Length == i + 1;
+                    if ((p >> 127) == 0)
+                    {
+                        u128 q = (u128)p;
+                        same = same && UInt128.Parse((q + 1).ToString()) == q + 1 && Int128.Parse((-(i128)q - 1).ToString()) == -(i128)q - 1;
+                    }
+                    p = p * 10;
+                }
+                r += same ? 1 : 0;
+                r += UInt256.MaxValue.ToString() == "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+                    && Int256.MinValue.ToString() == "-57896044618658097711785492504343953926634992332820282019728792003956564819968"
+                    && Int256.MaxValue.ToString() == "57896044618658097711785492504343953926634992332820282019728792003956564819967" ? 10 : 0;
+                r += UInt128.MaxValue.ToString() == "340282366920938463463374607431768211455" && Int128.MinValue.ToString() == "-170141183460469231731687303715884105728"
+                    && ((u128)10000000000000000000).ToString() == "10000000000000000000" && ((u128)9999999999999999999).ToString() == "9999999999999999999" ? 100 : 0;
+                r += ((u256)100000000000000000000000000000000000000 + (u256)7).ToString() == "100000000000000000000000000000000000007"
+                    && ((u256)1000000000000000000000000000000000000000000000000000000000 + (u256)10000000000000000000).ToString() == "1000000000000000000000000000000000000010000000000000000000" ? 1000 : 0;
+                r += ((i128)(-1)).ToString() == "-1" && ((u256)0).ToString() == "0" && ((i256)(-10000000000000000000)).ToString() == "-10000000000000000000"
+                    && ((i128)1 << 64).ToString() == "18446744073709551616" ? 10000 : 0;
+                return r;
+            }
+
+            /// A file written and read in 4 KB calls, then read, written and read again in turns: each at the position the last
+            /// call left, every byte where it was written.
+            public FileDirections() : i32
+            {
+                str? temp = Environment.GetEnvironmentVariable("TEMP");
+                str folder = temp is str found ? found : "/tmp";
+                str file = Path.Combine(folder, "larva-core-directions.bin");
+                u8[] chunk = new u8[4096];
+                FileStream stream = new FileStream(file, FileMode.Create);
+                loop (i32 k = 0..64)
+                {
+                    loop (i32 i = 0..4096)
+                        chunk[i] = (u8)(k + i);
+                    stream.Write(chunk, 0, 4096);
+                }
+                i32 r = stream.Position == 262144 && stream.Length == 262144 ? 1 : 0;
+                stream.Close();
+                stream = new FileStream(file, FileMode.Open, FileAccess.ReadWrite);
+                bool same = true;
+                loop (i32 k = 0..64)
+                {
+                    i32 n = stream.Read(chunk, 0, 4096);
+                    same = same && n == 4096 && chunk[5] == (u8)(k + 5) && chunk[4095] == (u8)(k + 4095);
+                }
+                r += same && stream.Read(chunk, 0, 4096) == 0 ? 10 : 0;
+                stream.Seek(100, SeekOrigin.Begin);
+                u8[] three = new u8[3];
+                stream.Read(three, 0, 3);
+                stream.Write(three, 0, 3);
+                i32 next = stream.ReadByte();
+                r += three[0] == 100 && three[2] == 102 && next == 106 && stream.Position == 107 ? 100 : 0;
+                stream.Seek(103, SeekOrigin.Begin);
+                r += stream.ReadByte() == 100 && stream.ReadByte() == 101 && stream.ReadByte() == 102 && stream.ReadByte() == 106 ? 1000 : 0;
+                stream.Seek(40960, SeekOrigin.Begin);
+                stream.Read(chunk, 0, 10);
+                loop (i32 i = 0..4096)
+                    chunk[i] = 7;
+                stream.Write(chunk, 0, 4096);
+                i32 after = stream.ReadByte();
+                stream.Seek(40969, SeekOrigin.Begin);
+                r += after == 21 && stream.ReadByte() == 19 && stream.ReadByte() == 7 && stream.Length == 262144 ? 10000 : 0;
+                stream.Close();
+                File.Delete(file);
+                return r + (File.Exists(file) ? 0 : 100000);
+            }
+
+            /// f128/f256 Math through π, ln 2 and ln 10 (constants in the type): every digit as the series gave them.
+            public MathWideConstants() : i32
+            {
+                i32 r = 0;
+                f128 a = (f128)1 / (f128)3;
+                f256 b = (f256)1 / (f256)3;
+                r += Math.Sin(a).ToString() == "0.32719469679615224417334408526762054" && Math.Exp(a).ToString() == "1.3956124250860895286281253196025867"
+                    && Math.Log(a).ToString() == "-1.0986122886681096913952452369225254" ? 1 : 0;
+                r += Math.Log2(a).ToString() == "-1.5849625007211561814537389439478168" && Math.Log10(a).ToString() == "-0.47712125471966243729502790325511535"
+                    && Math.Atan2(a, (f128)(-2)).ToString() == "2.9764439761751664001835150936355595" ? 10 : 0;
+                r += Math.Sin(b).ToString() == "0.327194696796152244173344085267620606064301406893759791590056277070576375"
+                    && Math.Log10(b).ToString() == "-0.477121254719662437295027903255115309200128864190695864829865640305229159"
+                    && Math.Log2(b).ToString() == "-1.58496250072115618145373894394781650875981440769248106045575265454109824" ? 100 : 0;
+                r += Math.Atan2((f256)0, (f256)(-1)).ToString() == "3.14159265358979323846264338327950288419716939937510582097494459230781638"
+                    && Math.Exp(b).ToString() == "1.39561242508608952862812531960258683759790651519940698261751670603173901" ? 1000 : 0;
+                return r;
+            }
+
+            public RegexBacktracking() : i32
+            {
+                i32 r = 0;
+                str many = LongText(30, (u8)'a');
+                r += !new Regex("(a+)+b").IsMatch(many) && !new Regex("(a|aa)+b").IsMatch(many + many) && !new Regex("(?:a+a+)+b").IsMatch(many)
+                    && new Regex("(a+)+b").Match(many + "b").Length == 31 && new Regex("(a+)+b").Match(many + "b").Group(1) == many ? 1 : 0;
+                r += new Regex("(?:ab)+c").Match("xababc").Value == "ababc" && new Regex("(?:ab)*").Match("abab").Length == 4 && new Regex("(?:ab){2}").Match("ababab").Value == "abab"
+                    && !new Regex("(?:ab)+c").IsMatch("ababd") && new Regex("(?:ab)+?").Match("abab").Value == "ab" ? 10 : 0;
+                str hay = LongText(200000, (u8)'x');
+                r += new Regex("needle\\d+").Match(hay + "needle42").Index == 200000 && new Regex("[0-9]+").Match(hay + "7").Value == "7"
+                    && new Regex("^x").Matches(hay).Count == 1 && new Regex("y|z").Match(hay).Index == -1 && new Regex("x\\b").Match(hay).Index == 199999 ? 100 : 0;
+                r += new Regex("x*").Matches("ab").Count == 3 && new Regex("(\\w+\\s?)+$").IsMatch("aaaa bbbb cccc dddd eeee ffff gggg hhhh")
+                    && !new Regex("(\\w+\\s?)+$").IsMatch("aaaa bbbb cccc dddd eeee ffff gggg hhhh!") ? 1000 : 0;
+                r += new Regex("(a*)*b").Match("aaab").Value == "aaab" && new Regex("(a|b)*?c").Match("abc").Group(1) == "b" && new Regex("(?:a|b){2,3}c").Match("ababc").Value == "babc"
+                    && new Regex("(a|ab)(c|bcd)(d*)").Match("abcd").Group(3) == "" && new Regex("(?:(a)|b)+").Match("ab").Group(1) == "a" ? 10000 : 0;
+                return r;
+            }
+
+            public JsonLarge() : i32
+            {
+                i32 r = 0;
+                JsonValue o = JsonValue.NewObject();
+                loop (i32 i = 0..20000)
+                    o.Set("key" + i, JsonValue.Of(i));
+                o.Set("key5", JsonValue.Of("five"));
+                str text = o.ToString();
+                JsonValue back = JsonValue.Parse(text);
+                r += back.Count == 20000 && back.KeyAt(19999) == "key19999" && back.ValueAt(5).AsString == "five" && back.ToString() == text ? 1 : 0;
+                r += back.Get("key12345") is JsonValue v && v.AsNumber == 12345.0 && back.Has("key0") && !back.Has("key20000") && back.Get("key") == null ? 10 : 0;
+                JsonValue d = JsonValue.Parse("{\"a\":1,\"b\":2,\"c\":3,\"d\":4,\"e\":5,\"f\":6,\"g\":7,\"h\":8,\"i\":9,\"a\":10,\"j\":11}");
+                r += d.Count == 10 && d.KeyAt(0) == "a" && d.ValueAt(0).AsNumber == 10.0 && d.ToString() == "{\"a\":10,\"b\":2,\"c\":3,\"d\":4,\"e\":5,\"f\":6,\"g\":7,\"h\":8,\"i\":9,\"j\":11}" ? 100 : 0;
+                JsonValue rows = JsonValue.Parse("[{\"id\":1,\"n\":\"x\"},{\"id\":2,\"n\":\"y\"},{\"i\\u0064\":3,\"n\":\"\\\"z\\\"\"}]");
+                r += rows.At(2).Get("id") is JsonValue id && id.AsNumber == 3.0 && rows.At(1).KeyAt(0) == "id" && rows.ToString() == "[{\"id\":1,\"n\":\"x\"},{\"id\":2,\"n\":\"y\"},{\"id\":3,\"n\":\"\\\"z\\\"\"}]" ? 1000 : 0;
+                u8[] units = [1, 31, 34, 92, 65, 10];
+                str controls = JsonValue.Of(new String<u8>(units)).ToString();
+                JsonValue numbers = JsonValue.Parse("[1,-2,3.5,-0,1e2,123456789012345,1234567890123456,0.000001]");
+                r += controls == "\"\\u0001\\u001f\\\"\\\\A\\n\"" && numbers.ToString() == "[1,-2,3.5,0,100,123456789012345,1234567890123456,1e-06]" && 1.0 / numbers.At(3).AsNumber == Float64.NegativeInfinity ? 10000 : 0;
+                return r;
+            }
+
+            public FloatParseInPlace() : i32
+            {
+                i32 r = 0;
+                r += Float64.Parse("0.1") == 0.1 && Float64.Parse("123456789012345") == 123456789012345.0 && Float64.Parse("1234567890123456789") == 1234567890123456789.0
+                    && Float64.Parse("9007199254740993") == 9007199254740992.0 ? 1 : 0;
+                r += Float64.Parse("1e22") == 1e22 && Float64.Parse("1e23") == 1e23 && Float64.Parse("8.5e-22") == 8.5e-22 && Float64.Parse("4.9406564584124654e-324") == Float64.Epsilon
+                    && Float64.Parse("1e400") == Float64.PositiveInfinity ? 10 : 0;
+                r += 1.0 / Float64.Parse("-0") == Float64.NegativeInfinity && 1.0 / Float64.Parse("0.0") == Float64.PositiveInfinity && Float64.Parse(" +2.5 ") == 2.5
+                    && Float64.Parse("-0.000125") == -0.000125 && Float64.Parse("00012.50") == 12.5 ? 100 : 0;
+                r += Float64.TryParse("1e") == null && Float64.TryParse("1.5x") == null && Float64.TryParse("") == null && Float64.IsNaN(Float64.Parse("nan"))
+                    && Float64.Parse("-Infinity") == Float64.NegativeInfinity && Float64.Parse("1E3") == 1000.0 ? 1000 : 0;
+                str s = "text";
+                String<u16> wide = new String<u16>(Unicode.ToUtf16("wide"));
+                r += s.ToString() == "text" && s.ToUtf8() == s && wide.ToUtf16().Equals(wide) && wide.ToString() == "wide" && new String<u32>(Unicode.Decode("ü".Units())).ToUtf8() == "ü" ? 10000 : 0;
+                return r;
+            }
+
             public Main() : i32 => Concat();
         }
 
@@ -3765,6 +4027,13 @@ public sealed unsafe class CoreLibraryTests : CheckedTest
         ("LogIntegers", 111, "Math.Log10/Log2/Log(x, base) of an integer below 1 (or in an integer base below 2) is an ArgumentError; of floats, -inf and nan as before"),
         ("HttpUrls", 1111, "HttpClient.Get: `https://` is an ArgumentError (no TLS); an empty or non-numeric port and a missing host are ArgumentErrors, not `not a number`"),
         ("ListVacated", 11111, "List.RemoveAt/Pop/RemoveAll/Clear (Stack.Pop, Queue.Dequeue) leave no reference in the slots they vacate (Items() past Count is null)"),
+        ("RegexBacktracking", 11111, "Regex: `(a+)+b`, `(a|aa)+b`, `(?:a+a+)+b` and `(\\w+\\s?)+$` fail fast (failures of an iteration's end remembered per position), a repeated sequence `(?:ab)+` takes all its units, `needle\\d+`/`[0-9]+` found far into 200,000 units (first-unit prefilter), `^x` only at 0, empty matches, nullable bodies (`(a*)*b`), lazy and bounded group repeats"),
+        ("JsonLarge", 11111, "JsonValue: a 20,000-member object built with Set (one replaced), written and read back in order (Count, KeyAt, ValueAt, Get, Has); a duplicate key past eight members replaces in place; objects of one shape (escaped keys too) read alike; control characters and quotes written as escapes; numbers past 15 digits"),
+        ("FloatParseInPlace", 11111, "Float64.Parse/TryParse read in place: exact up to 15 digits × 10^±22 and the rest as before (16+ digits, 1e23, the smallest subnormal, 1e400), -0 keeps its sign, `+` and spaces, the grammar's rejections, nan/Infinity; str.ToString/ToUtf8 and String<u16>.ToUtf16 give the same text"),
+        ("ManyObservers", 11111111, "4,000 effects on one Source (read twice each): each write runs them all once, in the order they began to observe; 3,000 disposed (the rest still in order, Observers 1000), new ones after them, once per Batch; an effect of 20 sources read twice (Sources 20, one observer each); an effect started inside another reading the same Source; 100 computeds read inside a batch computed once each, their effects once"),
+        ("WideTextRoundTrip", 11111, "i128/u128/i256/u256 ToString (19 digits per division) and Parse back at every power of ten and its neighbours, the limits, parts with zeros inside (10^38 + 7, 10^57 + 10^19), -1, 0, 2^64"),
+        ("FileDirections", 111111, "FileStream: 64 writes and reads of 4 KB give every byte back; read, write and read again in turns (also a 4 KB write after reads) each at the position the last call left"),
+        ("MathWideConstants", 1111, "f128/f256 Sin, Exp, Log, Log2, Log10, Atan2 through pi, ln 2 and ln 10 (constants in the type) to every digit"),
         ("Statics", 151711, "static constructors (in dependency order), nested types (of a generic type too), `++` on a static field"),
         ("Conditional", 1608534, "`?.` on fields, calls and strings, chained, with `??`"),
         ("Captures", 128912, "lambdas in loops: each pass's variables, a variable shared outside the loop"),
@@ -3976,8 +4245,9 @@ public sealed unsafe class CoreLibraryTests : CheckedTest
         int lines = library.Sum(f => f.Text.Count(c => c == '\n'));
         if (!vm.Success || !x64.Success || !llvm.Success)
             return;
-        // One interpreter runs every case: its step budget is for all of them together.
-        var interpreter = new Interpreter(vm.Il!, options: new InterpreterOptions { StepLimit = 200_000_000 });
+        // One interpreter runs every case: its step budget is for all of them together (the interpreter does about
+        // 30 M steps a second, so this is a few minutes at most).
+        var interpreter = new Interpreter(vm.Il!, options: new InterpreterOptions { StepLimit = 2_000_000_000 });
         using var image = x64.Program!.Load();
         using var program = llvm.Program!;
         using var jit = program.Jit();
