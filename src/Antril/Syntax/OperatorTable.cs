@@ -66,6 +66,29 @@ namespace Antril.Syntax
             return false;
         }
 
+        /// <summary>
+        /// What the table holds, as text: two tables with the same key parse a file alike (an editor's parsed files are
+        /// reused while the text and the key are the same, see <see cref="ParseCache"/>).
+        /// </summary>
+        public string Key
+        {
+            get
+            {
+                if (!HasDeclared)
+                    return "";
+                var key = new System.Text.StringBuilder();
+                foreach (var (symbol, (level, associativity)) in binary.OrderBy(b => b.Key, StringComparer.Ordinal))
+                    key.Append(symbol).Append(' ').Append(level).Append(' ').Append((int)associativity).Append('\n');
+                key.Append("prefix");
+                foreach (string symbol in prefix.Order(StringComparer.Ordinal))
+                    key.Append(' ').Append(symbol);
+                key.Append("\npostfix");
+                foreach (string symbol in postfix.Order(StringComparer.Ordinal))
+                    key.Append(' ').Append(symbol);
+                return key.ToString();
+            }
+        }
+
         public bool IsPrefix(string symbol) => prefix.Contains(symbol);
 
         public bool IsPostfix(string symbol) => postfix.Contains(symbol);

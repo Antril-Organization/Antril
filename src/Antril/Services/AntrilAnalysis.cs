@@ -23,8 +23,14 @@ namespace Antril.Services
         public AntrilOptions Options { get; init; } = AntrilOptions.Default;
 
         /// <summary>
+        /// The files parsed for earlier analyses (by path and text): only the files that changed are parsed again.
+        /// </summary>
+        public ParseCache Parsed { get; } = new();
+
+        /// <summary>
         /// Parses and binds <paramref name="document"/> (with <paramref name="others"/>, the rest of its program) as it is,
-        /// errors and all, recording what each part of it is.
+        /// errors and all, recording what each part of it is. A file whose text is the one an earlier analysis parsed is not
+        /// parsed again (<see cref="Parsed"/>).
         /// </summary>
         public AntrilAnalysis Analyze(SourceText document, IReadOnlyList<SourceText>? others = null, string assemblyName = "Program")
         {
@@ -32,15 +38,24 @@ namespace Antril.Services
             var sources = (others ?? []).Where(o => o.Path != document.Path).Prepend(document).ToArray();
             var diagnostics = new DiagnosticBag();
             var bags = new DiagnosticBag[sources.Length];
-            var (units, table) = Parser.ParseAll(sources, bags, References, diagnostics, parallel: false);
+            var (units, table) = Parser.ParseAll(sources, bags, References, diagnostics, parallel: false, Parsed);
+            Parsed.Keep(sources.Select(s => s.Path));
+            // A file found parsed is the text it was parsed from (what the diagnostics and the recorded spans name).
+            document = units[0].Source;
             foreach (var bag in bags)
                 diagnostics.AddRange(bag);
+            var timings = new Dictionary<string, long> { ["parse"] = watch.ElapsedMilliseconds };
             var recorder = new BindingRecorder();
-            var binder = new Binder(assemblyName, Variadic.Expand(units, diagnostics, References, table), diagnostics, parallel: true, References) { Recorder = recorder, Operators = table, Options = Options };
+            var expanded = Variadic.Expand(units, diagnostics, References, table);
+            timings["variadic"] = watch.ElapsedMilliseconds;
+            var binder = new Binder(assemblyName, expanded, diagnostics, parallel: true, References) { Recorder = recorder, Operators = table, Options = Options };
             binder.ExternalAssemblies.UnionWith(ExternalAssemblies);
-            var assembly = binder.Bind([]);
+            var bindWatch = Stopwatch.StartNew();
+            var assembly = binder.Bind(timings);
+            timings["bind"] = bindWatch.ElapsedMilliseconds;
             var catalog = HirCatalog.Create([assembly, .. References]);
-            return new AntrilAnalysis(document, units[0], catalog, catalog.Assemblies[0], recorder, diagnostics, watch.Elapsed.TotalMilliseconds);
+            timings["catalog"] = watch.ElapsedMilliseconds;
+            return new AntrilAnalysis(document, units[0], catalog, catalog.Assemblies[0], recorder, diagnostics, watch.Elapsed.TotalMilliseconds) { Timings = timings };
         }
     }
 
@@ -75,6 +90,9 @@ namespace Antril.Services
 
         /// <summary>How long parsing, binding and making the catalog took.</summary>
         public double Milliseconds { get; }
+
+        /// <summary>Milliseconds per phase (parse, variadic, the binder's phases, bind, catalog; parse, variadic and catalog from the start).</summary>
+        public IReadOnlyDictionary<string, long> Timings { get; init; } = new Dictionary<string, long>();
 
         public string Text => source.Text;
 

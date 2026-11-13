@@ -92,17 +92,34 @@ namespace Antril.Syntax
         /// are parsed again knowing them (their bodies may use them). Each file's diagnostics go to its bag; the operator
         /// declarations' to <paramref name="diagnostics"/>.
         /// </summary>
-        public static (CompilationUnit[] Units, OperatorTable Table) ParseAll(SourceText[] files, DiagnosticBag[] bags, IReadOnlyList<Larva.Hir.HirAssembly>? references, DiagnosticBag diagnostics, bool parallel)
+        /// <remarks>
+        /// With a <paramref name="cache"/> (an editor's: the program is parsed again on every change), a file whose path and
+        /// text were parsed before with an operator table of the same <see cref="OperatorTable.Key"/> is not parsed again:
+        /// its unit and bag are the ones made then, and <c>units[i].Source</c> is the <see cref="SourceText"/> it was made
+        /// from (the same text and path as <c>files[i]</c>, another object: diagnostics and spans name that one).
+        /// </remarks>
+        public static (CompilationUnit[] Units, OperatorTable Table) ParseAll(SourceText[] files, DiagnosticBag[] bags, IReadOnlyList<Larva.Hir.HirAssembly>? references, DiagnosticBag diagnostics, bool parallel,
+            ParseCache? cache = null)
         {
             var table = OperatorTable.FromReferences(references);
             var units = new CompilationUnit[files.Length];
+            string key = "";
             void ParseOne(int i)
             {
+                if (cache is not null && cache.TryGet(files[i], key, out var unit, out var bag))
+                {
+                    bags[i] = bag;
+                    units[i] = unit;
+                    return;
+                }
                 bags[i] = [];
                 units[i] = Parse(files[i], bags[i], table);
+                cache?.Add(key, units[i], bags[i]);
             }
             void All()
             {
+                if (cache is not null)
+                    key = table.Key;
                 if (parallel && files.Length > 1)
                     Parallel.For(0, files.Length, ParseOne);
                 else
