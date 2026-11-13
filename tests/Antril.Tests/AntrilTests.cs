@@ -367,6 +367,20 @@ public sealed unsafe class AntrilTests : CheckedTest
             Wide(u64 x) : i32 => 1;
             Wide(i128 x) : i32 => 2;
 
+            Pair<T>(T a, T b) : T => b;
+            Held<T>(Counter<T> c) : T => c.Held;
+            public class Counter<T> { public: T Held; }
+            public class Tally : Counter<i32> { }
+
+            public Inference() : i64
+            {
+                i64 l = 5;
+                u8 b = 7;
+                Tally t = new Tally();
+                t.Held = 9;
+                return Pair(1, l) * 1000 + Pair(l, 2) * 100 + Pair(b, 300) + Held(t) * 10000;
+            }
+
             public Overloads() : i32
             {
                 i16 s = 3;
@@ -406,6 +420,7 @@ public sealed unsafe class AntrilTests : CheckedTest
         ("Fields", null, 92, "field initializers run in the implicit constructor"),
         ("Numbers", null, 3000000310, "implicit widening, literals typed by context, casts"),
         ("Wraps", null, 43872, "u8 and i8 arithmetic wraps around"),
+        ("Inference", null, 95500, "T from every argument (a literal first, a wider second, u8 with 300) and a derived class against Counter<T>"),
         ("Overloads", null, 1111, "the nearest wider integer wins: i16 takes i32 over i64 (and f64), u32 takes u64 over i128"),
     ];
 
@@ -793,6 +808,18 @@ public sealed unsafe class AntrilTests : CheckedTest
             ("F(i32 x) : i32 => 1; F(i64 x) : i32 => 2; G() : i32 { i16 s = 3; return F(s); }", "", "F(i16) with F(i32) and F(i64) is not ambiguous"),
             ("F(i64 x) : i32 => 1; F(f64 x) : i32 => 2; G() : i32 { i16 s = 3; return F(s); }", "", "nor with F(i64) and F(f64)"),
             ("F(i16 x) : i32 => 1; F(u16 x) : i32 => 2; G() : i32 { u8 s = 3; return F(s); }", "AN2058", "F(u8) with F(i16) and F(u16): the same width, still ambiguous"),
+            ("Pair<T>(T a, T b) : T => b; G() : i64 { i64 l = 1; return Pair(1, l) + Pair(l, 1); }", "", "T inferred from every argument: a literal first or second"),
+            ("Pair<T>(T a, T b) : T => b; G() : f64 => Pair(1, 2.5);", "", "T is the type the other argument widens to"),
+            ("Pair<T>(T a, T b) : T => b; G() : i32 => Pair(1, true);", "AN2084", "two arguments that convert neither way: the second does not fit the first's T"),
+            ("public class B<T> { public: T V; } public class D : B<i32> { } Take<T>(B<T> b) : T => b.V; G(D d) : i32 => Take(d);", "", "a derived class against a parameter of its generic base"),
+            ("F() { i8 j = 100 + 100; }", "AN2028", "constant arithmetic outside the type does not wrap"),
+            ("F() { i8 m = 127 + 1; }", "AN2028", "…by one"),
+            ("F() { u8 n = 3 - 5; }", "AN2028", "…below zero in an unsigned type"),
+            ("F() { i8 s = 1 << 7; }", "AN2028", "…by a shift"),
+            ("const i8 K = 100 + 100;", "AN1092", "…in a const declaration"),
+            ("F() { const i8 k = 50 * 3; }", "AN1092", "…in a local const"),
+            ("public enum E : i8 { A = 100 + 100 }", "AN1019", "…in an enum member's value"),
+            ("F() : i64 { i64 big = 2147483647 + 1; i32 ok = 1 << 7; i8 fits = 60 + 60; i8 wrapped = (i8)300; return big + ok + fits + wrapped; }", "", "constant arithmetic that fits (the literals take the type wanted), and a cast that wraps"),
         ];
         foreach (var (text, code, what) in wrong)
         {

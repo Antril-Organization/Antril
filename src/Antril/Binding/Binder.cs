@@ -2829,10 +2829,11 @@ namespace Antril.Binding
             }
             try
             {
+                int before = Diagnostics.Count;
                 var value = Constant(initializer, field.Type, scope, Diagnostics, field.Owner);
                 if (value is null)
                 {
-                    if (!field.ConstantFailed)
+                    if (!field.ConstantFailed && Diagnostics.Count == before)
                         Error("AN1091", $"the value of `{field.Name}` is not known when compiling: a constant is made of literals, other constants, enum values and operators, casts and `?:` on them", scope.Source, initializer.Span);
                     field.ConstantFailed = true;
                     return null;
@@ -2967,7 +2968,12 @@ namespace Antril.Binding
                 {
                     var left = Constant(binary.Left, type, scope, bag, within);
                     var right = Constant(binary.Right, type, scope, bag, within);
-                    return left is null || right is null ? null : Arithmetic(binary.Operator, left, right, type);
+                    if (left is null || right is null)
+                        return null;
+                    var computed = Arithmetic(binary.Operator, left, right, type, out var overflow);
+                    if (overflow is { } outside)
+                        bag.Error("AN1092", $"`{scope.Source[binary.Span]}` is {outside}, which does not fit in a `{H.Text.HirPrinter.Print(type, Assembly)}`", scope.Source, binary.Span);
+                    return computed;
                 }
                 case BinaryExpr { Operator: BinaryOperator.Add } concat when StringType is { } stringType && type == stringType:
                     return Constant(concat.Left, type, scope, bag, within) is H.StringConstant head && Constant(concat.Right, type, scope, bag, within) is H.StringConstant tail
@@ -3063,9 +3069,14 @@ namespace Antril.Binding
         private static bool Arithmetic(BinaryOperator op) => op is BinaryOperator.Add or BinaryOperator.Subtract or BinaryOperator.Multiply or BinaryOperator.Divide
             or BinaryOperator.Remainder or BinaryOperator.And or BinaryOperator.Or or BinaryOperator.Xor or BinaryOperator.ShiftLeft or BinaryOperator.ShiftRight;
 
-        /// <summary>An operator on two constants of <paramref name="type"/> (integers wrap as at run time; floats round as IEEE).</summary>
-        private H.HirConstant? Arithmetic(BinaryOperator op, H.HirConstant left, H.HirConstant right, H.HirType type)
+        /// <summary>
+        /// An operator on two constants of <paramref name="type"/> (floats round as IEEE). An integer result outside the
+        /// type is no constant: it comes back in <paramref name="overflow"/> for the caller to report (constants do not wrap:
+        /// `(i8)` says so when wrapping is meant).
+        /// </summary>
+        private H.HirConstant? Arithmetic(BinaryOperator op, H.HirConstant left, H.HirConstant right, H.HirType type, out BigInteger? overflow)
         {
+            overflow = null;
             switch (left, right)
             {
                 case (H.IntegerConstant a, H.IntegerConstant b) when type is H.PrimitiveType { Kind: var k }:
@@ -3084,7 +3095,9 @@ namespace Antril.Binding
                         BinaryOperator.ShiftRight when b.Value >= 0 && b.Value < k.Bits() => a.Value >> (int)b.Value,
                         _ => null,
                     };
-                    return result is { } r && Fits(r, k) ? new H.IntegerConstant(r, k) : null;
+                    if (result is { } r && !Fits(r, k))
+                        overflow = r;
+                    return result is { } fitting && Fits(fitting, k) ? new H.IntegerConstant(fitting, k) : null;
                 }
                 case (H.FloatConstant a, H.FloatConstant b) when type is H.PrimitiveType { Kind: var k }:
                 {
