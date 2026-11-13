@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Text;
 using Antril.Binding;
 using Antril.Syntax;
@@ -359,6 +359,36 @@ public sealed unsafe class AntrilTests : CheckedTest
                 return y * 1000 + z;
             }
 
+            Pick(i32 x) : i32 => 1;
+            Pick(i64 x) : i32 => 2;
+            Pick(f64 x) : i32 => 3;
+            Near(i64 x) : i32 => 1;
+            Near(f64 x) : i32 => 2;
+            Wide(u64 x) : i32 => 1;
+            Wide(i128 x) : i32 => 2;
+
+            Pair<T>(T a, T b) : T => b;
+            Held<T>(Counter<T> c) : T => c.Held;
+            public class Counter<T> { public: T Held; }
+            public class Tally : Counter<i32> { }
+
+            public Inference() : i64
+            {
+                i64 l = 5;
+                u8 b = 7;
+                Tally t = new Tally();
+                t.Held = 9;
+                return Pair(1, l) * 1000 + Pair(l, 2) * 100 + Pair(b, 300) + Held(t) * 10000;
+            }
+
+            public Overloads() : i32
+            {
+                i16 s = 3;
+                u8 b = 4;
+                u32 u = 5;
+                return Pick(s) * 1000 + Pick(b) * 100 + Near(s) * 10 + Wide(u);
+            }
+
             public Main() : i32 => Sum(10);
         }
         """;
@@ -390,6 +420,8 @@ public sealed unsafe class AntrilTests : CheckedTest
         ("Fields", null, 92, "field initializers run in the implicit constructor"),
         ("Numbers", null, 3000000310, "implicit widening, literals typed by context, casts"),
         ("Wraps", null, 43872, "u8 and i8 arithmetic wraps around"),
+        ("Inference", null, 95500, "T from every argument (a literal first, a wider second, u8 with 300) and a derived class against Counter<T>"),
+        ("Overloads", null, 1111, "the nearest wider integer wins: i16 takes i32 over i64 (and f64), u32 takes u64 over i128"),
     ];
 
     private void Programs()
@@ -764,6 +796,50 @@ public sealed unsafe class AntrilTests : CheckedTest
             ("public enum E : i32 { One = 1, Two = Three - 1, Three = 3 }", "AN1019", "a member made of one declared after it"),
             ("public value Rgb { public: u8 r; new(u8 r) { this.r = r; } } public enum Color : Rgb { Red = new Rgb(255) } const Color Fav = Color.Red; const Rgb Raw = (Rgb)Color.Red; F() : i32 => Raw.r;",
                 "", "the members of an enum of values are constants (and so is their value)"),
+            // Medium findings 2026-11-12 (M5): what the binder used to leave to the lowering, without a position.
+            ("F() { f64 d = 1.0; d &= 2.0; }", "AN2074", "`&=` on a float"),
+            ("F() { bool b = true; b |= false; i32 n = 1; n ^= 2; }", "", "`|=` on a bool, `^=` on an integer"),
+            ("public bitflag enum Fl { A, B } F() { Fl f = Fl.A; f |= Fl.B; }", "", "`|=` on a bitflag enum"),
+            ("public class C { public: i32 Q { get; set; } } F(C c) : i32 { c.Q++; --c.Q; return c.Q--; }", "", "`++` and `--` on a property (through its accessors)"),
+            ("public value V { V inner; }", "AN1106", "a value that holds itself"),
+            ("public value A { B b; } public value B { A a; }", "AN1106", "a value that holds itself through another value"),
+            ("public value W<T> { T item; } public value S { W<S> w; }", "AN1106", "a value that holds itself through a generic value"),
+            ("public value W<T> { T item; } public value S { W<i32> w; S? maybe; S[] many; }", "", "a value holding other values, a nullable and an array of itself"),
+            ("F(i32 x) : i32 => 1; F(i64 x) : i32 => 2; G() : i32 { i16 s = 3; return F(s); }", "", "F(i16) with F(i32) and F(i64) is not ambiguous"),
+            ("F(i64 x) : i32 => 1; F(f64 x) : i32 => 2; G() : i32 { i16 s = 3; return F(s); }", "", "nor with F(i64) and F(f64)"),
+            ("F(i16 x) : i32 => 1; F(u16 x) : i32 => 2; G() : i32 { u8 s = 3; return F(s); }", "AN2058", "F(u8) with F(i16) and F(u16): the same width, still ambiguous"),
+            ("Pair<T>(T a, T b) : T => b; G() : i64 { i64 l = 1; return Pair(1, l) + Pair(l, 1); }", "", "T inferred from every argument: a literal first or second"),
+            ("Pair<T>(T a, T b) : T => b; G() : f64 => Pair(1, 2.5);", "", "T is the type the other argument widens to"),
+            ("Pair<T>(T a, T b) : T => b; G() : i32 => Pair(1, true);", "AN2084", "two arguments that convert neither way: the second does not fit the first's T"),
+            ("public class B<T> { public: T V; } public class D : B<i32> { } Take<T>(B<T> b) : T => b.V; G(D d) : i32 => Take(d);", "", "a derived class against a parameter of its generic base"),
+            ("F() { i8 j = 100 + 100; }", "AN2028", "constant arithmetic outside the type does not wrap"),
+            ("F() { i8 m = 127 + 1; }", "AN2028", "…by one"),
+            ("F() { u8 n = 3 - 5; }", "AN2028", "…below zero in an unsigned type"),
+            ("F() { i8 s = 1 << 7; }", "AN2028", "…by a shift"),
+            ("const i8 K = 100 + 100;", "AN1092", "…in a const declaration"),
+            ("F() { const i8 k = 50 * 3; }", "AN1092", "…in a local const"),
+            ("public enum E : i8 { A = 100 + 100 }", "AN1019", "…in an enum member's value"),
+            ("F() : i64 { i64 big = 2147483647 + 1; i32 ok = 1 << 7; i8 fits = 60 + 60; i8 wrapped = (i8)300; return big + ok + fits + wrapped; }", "", "constant arithmetic that fits (the literals take the type wanted), and a cast that wraps"),
+            ("F() : u256 => (u256)0 - (u256)1;", "", "cast literals say their type themselves: the run time's arithmetic (wraps)"),
+            ("F() : i128 => 1i128 << 127;", "", "…and so do suffixed ones"),
+            ("import A; import B; into namespace A { public class T { } } into namespace B { public class T { } } F() { T t = new T(); }", "AN1107", "a type two imported namespaces both have"),
+            ("import A; import B; into namespace A { public class T { public: static N() : i32 => 1; } } into namespace B { public class T { } } F() : i32 => T.N();", "AN1107", "…reached through its static members"),
+            ("import A; import B; into namespace A { public class T { } } into namespace B { public class T { } } into namespace A { F() { T t = new T(); } }", "", "…but the current namespace's wins"),
+            ("import T from A; import B; into namespace A { public class T { } } into namespace B { public class T { } public class U { } } F() { T t = new T(); U u = new U(); }", "", "…and one imported by name wins"),
+            ("import Nope; F() { }", "AN1084", "an import of a namespace that does not exist"),
+            ("import A; into namespace A { public class T { } } F() { T t = new T(); }", "", "an import of a namespace that exists"),
+            ("public enum C { R, G, B } F(C c) : i32 => c switch { C.R => 1, C.G => 2 };", "AN2147", "a switch expression over an enum that misses a member, without `_`"),
+            ("F(bool b) : i32 => b switch { true => 1 };", "AN2147", "…over a bool that misses `false`"),
+            ("public enum C { R, G, B } F(C c) : i32 => c switch { C.R => 1, C.G or C.B => 2 };", "", "every member named (in an or-pattern too)"),
+            ("F(bool b) : i32 => b switch { true => 1, false => 0 };", "", "both bools named"),
+            ("public enum C { R, G, B } F(C c) : i32 => c switch { C.R => 1, _ => 2 };", "", "a `_` arm covers the rest"),
+            ("public enum C { R, G, B } F(C c) : i32 => c switch { C.R => 1, var o when o == C.G => 2, C.B => 3 };", "", "a guarded arm: what it covers is not counted (the run time says)"),
+            ("F() : str { return \"\\x41\"; }", "AN0008", "an unknown escape"),
+            ("F() : u16 => '\\q';", "AN0008", "…in a character literal"),
+            ("F() : u16 => '\\u12';", "AN0008", "`\\u` with too few digits"),
+            ("F() : u32 => '\\U00110000';", "AN0008", "`\\U` beyond U+10FFFF"),
+            ("F() : u16 { u16 a = '\\u0041'; return a; }", "", "`\\uXXXX`"),
+            ("F() : u32 { u32 a = '\\U0001F600'; return a; }", "", "`\\U000XXXXX` beyond the BMP"),
         ];
         foreach (var (text, code, what) in wrong)
         {

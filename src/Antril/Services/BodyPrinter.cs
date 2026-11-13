@@ -342,12 +342,20 @@ namespace Antril.Services
                         H.UnaryOp.Negate => "-", H.UnaryOp.Plus => "+", H.UnaryOp.Not => "!", H.UnaryOp.BitNot => "~",
                         H.UnaryOp.PreIncrement => "++", _ => "--",
                     };
-                    return Wrap(prefix + Expr(u.Operand, 14), 14, minimum);
+                    string operand = u.Op == H.UnaryOp.Negate ? Operand(u.Operand, 14) : Expr(u.Operand, 14);
+                    // `- -x` and `+ +x`: a space, or they read as `--x` and `++x`.
+                    if (operand.Length > 0 && (prefix is "-" or "+" or "++" or "--") && operand[0] == prefix[0])
+                        operand = " " + operand;
+                    return Wrap(prefix + operand, 14, minimum);
                 }
                 case H.BinaryExpr b:
                 {
                     int precedence = Precedence(b.Op);
-                    return Wrap($"{Expr(b.Left, precedence)} {Symbol(b.Op)} {Expr(b.Right, precedence + 1)}", precedence, minimum);
+                    bool arithmetic = b.Op is H.BinaryOp.Add or H.BinaryOp.Subtract or H.BinaryOp.Multiply or H.BinaryOp.Divide or H.BinaryOp.Remainder
+                        or H.BinaryOp.BitAnd or H.BinaryOp.BitOr or H.BinaryOp.BitXor or H.BinaryOp.ShiftLeft or H.BinaryOp.ShiftRight;
+                    string left = arithmetic ? Operand(b.Left, precedence) : Expr(b.Left, precedence);
+                    string right = arithmetic ? Operand(b.Right, precedence + 1) : Expr(b.Right, precedence + 1);
+                    return Wrap($"{left} {Symbol(b.Op)} {right}", precedence, minimum);
                 }
                 case H.AssignExpr a:
                     return Wrap($"{Expr(a.Target, 2)} {(a.Compound is { } op ? Symbol(op) + "=" : "=")} {Expr(a.Value, 1)}", 1, minimum);
@@ -518,6 +526,15 @@ namespace Antril.Services
             H.FuncType f => f.Parameters.Any(p => Mentions(p, generic)) || Mentions(f.Result, generic),
             _ => false,
         };
+
+        /// <summary>
+        /// An operand of arithmetic: a numeric widening stays written as its cast (`(i64)x * y` computes in 64 bits;
+        /// `x * y` would overflow in 32 and widen the result), where the view drops it elsewhere (`i64 total = count`).
+        /// </summary>
+        private string Operand(H.Expr e, int minimum) =>
+            e is H.ConvertExpr { Kind: H.ConversionKind.Numeric } c && Widening(c.Value.Type, c.Type)
+                ? Wrap($"({Type(c.Type)}){Expr(c.Value, 14)}", 14, minimum)
+                : Expr(e, minimum);
 
         private string Conversion(H.ConvertExpr c, int minimum)
         {

@@ -707,6 +707,13 @@ namespace Antril.Binding
         /// <summary>The local constants (<c>const T x = v;</c>) declared: their values (a value made of constants: none).</summary>
         private readonly Dictionary<int, (H.HirConstant? Value, H.HirType Type)> localConstants = [];
 
+        /// <summary>
+        /// The integer literals whose type came from where they stand (`i8 j = 100`: an i8), and what folding them
+        /// gives: an operator on two of them is computed when compiling and does not wrap. A suffixed or cast literal
+        /// (`1i128 << 127`, `(u256)0 - (u256)1`) says its type itself and keeps the run time's arithmetic.
+        /// </summary>
+        private readonly HashSet<H.Expr> contextual = new(ReferenceEqualityComparer.Instance);
+
         /// <summary>The values of the local constants in scope, by name, for the constants that name them.</summary>
         private (H.HirConstant Value, H.HirType Type)? LocalConstant(string name) =>
             LookupLocal(name) is { } index && localConstants.TryGetValue(index, out var found) && found.Value is { } value ? (value, found.Type) : null;
@@ -742,17 +749,20 @@ namespace Antril.Binding
             }
             var constantScope = scope with { LocalConstants = LocalConstant };
             H.HirConstant? constant = null;
+            int before = bag.Count;
             if (binder.IsConstantType(type))
             {
                 constant = binder.Constant(initializer, type, constantScope, bag, owner);
-                if (constant is null)
+                if (constant is null && bag.Count == before)
                     Error("AN1091", $"the value of `{local.Name}` is not known when compiling: a constant is made of literals, other constants, enum values and operators, casts and `?:` on them", initializer.Span);
             }
             else if (binder.SymbolOf(type) is not { IsStruct: true })
                 Error("AN1088", $"a constant is a number, bool, character, string, enum value or value (struct), not `{Show(type)}`", local.Type.Span);
             else if (!binder.MadeOfConstants(initializer, constantScope, owner))
                 Error("AN1089", $"a constant value is made of constants: `const {Show(type)} {local.Name} = new {Show(type)}(1, 2);`", initializer.Span);
-            H.Expr value = constant is not null ? new H.LiteralExpr(constant, type) : Convert(Expression(initializer, type), type, initializer.Span);
+            H.Expr value = constant is not null ? new H.LiteralExpr(constant, type)
+                : bag.Count > before ? new H.DefaultExpr(ErrorType) // the constant evaluation said what is wrong (an overflow)
+                : Convert(Expression(initializer, type), type, initializer.Span);
             int index = Declare(local.Name, type, local.NameSpan);
             localConstants[index] = (constant, type);
             return new H.LocalStmt(index, value);
@@ -1012,6 +1022,7 @@ namespace Antril.Binding
                     var type = Resolve(cast.Type) ?? ErrorType;
                     binder.CheckDeclared(type, OwnGeneric, source, cast.Type.Span);
                     var value = Expression(cast.Operand, type);
+                    contextual.Remove(value); // `(u256)0 - (u256)1`: a cast literal says its type itself, and wraps as the run time does
                     return Convert(value, type, cast.Span, explicitly: true);
                 }
                 case IsExpr test:
@@ -1145,15 +1156,21 @@ namespace Antril.Binding
             if (expected is not null && ParamLiteral(value, expected) is { } unit)
                 return unit;
             if (expected is H.PrimitiveType { Kind: var kind } && kind.IsInteger() && Binder.Fits(value, kind))
-                return new H.LiteralExpr(new H.IntegerConstant(value, kind), expected);
+                return Contextual(new H.LiteralExpr(new H.IntegerConstant(value, kind), expected));
             if (expected is H.PrimitiveType { Kind: var floatKind } && floatKind.IsFloat())
                 return new H.LiteralExpr(FloatOf(value, floatKind), expected);
             foreach (var fallback in new[] { H.Primitive.I32, H.Primitive.I64, H.Primitive.U64, H.Primitive.I128 })
             {
                 if (Binder.Fits(value, fallback))
-                    return new H.LiteralExpr(new H.IntegerConstant(value, fallback), H.HirType.Of(fallback));
+                    return Contextual(new H.LiteralExpr(new H.IntegerConstant(value, fallback), H.HirType.Of(fallback)));
             }
             return Failed("AN2028", $"{value} does not fit in any integer type", span);
+        }
+
+        private H.LiteralExpr Contextual(H.LiteralExpr literal)
+        {
+            contextual.Add(literal);
+            return literal;
         }
 
         // ── Names and members ──────────────────────────────
@@ -1447,7 +1464,10 @@ namespace Antril.Binding
             // `i32.F()`: the primitive's provider (Int32), which holds its static members and extensions.
             if (root == target && Binder.PrimitiveNamed(name.Name) is { } primitive && binder.PrimitiveTypes.TryGetValue(primitive, out var provider))
                 return provider;
-            var type = binder.TypeNamed(target, scope);
+            int before = bag.Count;
+            var type = binder.TypeNamed(target, scope, bag);
+            if (type is null && bag.Count > before)
+                type = binder.TypeNamed(target, scope); // ambiguous (reported): binding goes on with the first import's
             if (type is not null)
                 binder.CheckTypeAccess(type, scope, target.Span, bag);
             if (type is not null && recorder is not null)
@@ -2346,12 +2366,21 @@ namespace Antril.Binding
             switch (parameter)
             {
                 case H.GenericParamType g when g.Owner == owner && g.Index < inferred.Length:
-                    if (inferred[g.Index] is null)
+                    // Every argument has a say: when two give T, the one the other converts to wins (`Pair(1, l)` and
+                    // `Pair(l, 1)` both make T an i64; `Pair(dog, animal)` an Animal). Two that convert neither way leave
+                    // the first, and the conversion check of the call says which argument does not fit.
+                    if (inferred[g.Index] is not { } known || known == argument)
+                        inferred[g.Index] = argument;
+                    else if (Cost(new H.DefaultExpr(known), argument) is not null && Cost(new H.DefaultExpr(argument), known) is null)
                         inferred[g.Index] = argument;
                     return;
                 case H.NamedType p when argument is H.NamedType an && p.Type == an.Type && p.Arguments.Length == an.Arguments.Length:
                     for (int i = 0; i < p.Arguments.Length; i++)
                         Infer(p.Arguments[i], an.Arguments[i], inferred, owner);
+                    return;
+                case H.NamedType p when argument is H.NamedType && binder.SymbolOf(p) is { IsClass: true } baseSymbol && Ancestor(argument, baseSymbol) is var (asBase, depth) && depth > 0:
+                    // A derived class against `Base<T>`: T from the base as the class sees it (`class Derived : Base<i32>`).
+                    Infer(p, asBase, inferred, owner);
                     return;
                 case H.ArrayType p when argument is H.ArrayType aa:
                     Infer(p.Element, aa.Element, inferred, owner);
@@ -2716,6 +2745,17 @@ namespace Antril.Binding
                     }
                     if (!IsNumeric(target.Type) && target.Type is not H.PointerType)
                         return Failed("AN2065", $"`++` and `--` change a number, not a `{Show(target.Type)}` (a type declares `op ++(T x) : T` to have them)", unary.Span);
+                    if (target is H.PropertyExpr && target.Type is not H.PointerType)
+                    {
+                        // `c.Q++` on a property: read through `get`, write through `set`, as `c.Q += 1` does (the
+                        // lowering steps places only); `c.Q++` gives the old value, `++c.Q` the new one.
+                        var one = Convert(new H.LiteralExpr(new H.IntegerConstant(1, H.Primitive.I32), H.HirType.I32), target.Type, unary.Span);
+                        var step = new H.AssignExpr(target, one, target.Type) { Compound = increment ? H.BinaryOp.Add : H.BinaryOp.Subtract };
+                        if (before)
+                            return step;
+                        int old = Declare($"$step{locals.Count}", target.Type, default);
+                        return new H.BlockExpr([new H.LocalStmt(old, target), new H.ExprStmt(step)], new H.LocalExpr(old, target.Type), target.Type);
+                    }
                     var op = unary.Operator switch
                     {
                         UnaryOperator.PreIncrement => H.UnaryOp.PreIncrement,
@@ -2942,7 +2982,14 @@ namespace Antril.Binding
                     if (!IsInteger(target.Type))
                         return Failed("AN2073", $"shifts work on integers, not a `{Show(target.Type)}`", assign.Span);
                 }
-                else if (!(IsNumeric(target.Type) || target.Type == H.HirType.Bool && op is BinaryOperator.And or BinaryOperator.Or or BinaryOperator.Xor))
+                else if (op is BinaryOperator.And or BinaryOperator.Or or BinaryOperator.Xor)
+                {
+                    // Bits: integers, bools and bitflag enums (as `a & b` in BinaryOf), not floats.
+                    bool bitflags = target.Type is H.NamedType && binder.SymbolOf(target.Type) is { IsEnum: true, Definition.Kind: H.TypeKind.Bitflags };
+                    if (!(IsInteger(target.Type) || target.Type == H.HirType.Bool || bitflags))
+                        return Failed("AN2074", $"`{Symbol(op)}=` works on integers, bools and bitflag enums, not a `{Show(target.Type)}`", assign.Span);
+                }
+                else if (!IsNumeric(target.Type))
                 {
                     return Failed("AN2074", $"`{Symbol(op)}=` works on numbers, not a `{Show(target.Type)}`", assign.Span);
                 }
@@ -3065,6 +3112,8 @@ namespace Antril.Binding
             {
                 if (!IsInteger(left.Type) || !IsInteger(right.Type))
                     return Failed("AN2073", $"shifts work on integers, not `{Show(left.Type)}` and `{Show(right.Type)}`", binary.Span);
+                if (Folded(op, left, right, left.Type, binary) is { } shifted)
+                    return shifted;
                 return new H.BinaryExpr(Hir(op), left, Convert(right, left.Type, binary.Right.Span, explicitly: true), left.Type);
             }
             // Arithmetic takes the type the result goes to when both operands convert to it (`i64 x = a + b`).
@@ -3089,6 +3138,8 @@ namespace Antril.Binding
                 return new H.BinaryExpr(Hir(op), a, b, H.HirType.Bool);
             }
             bool bitwise = op is BinaryOperator.And or BinaryOperator.Or or BinaryOperator.Xor;
+            if (Folded(op, a, b, type, binary) is { } folded)
+                return folded;
             if (bitwise && (IsInteger(type) || type == H.HirType.Bool || isEnum && binder.SymbolOf(type)!.Definition.Kind == H.TypeKind.Bitflags))
                 return new H.BinaryExpr(Hir(op), a, b, type);
             if (!IsNumeric(type) || bitwise)
@@ -3097,6 +3148,38 @@ namespace Antril.Binding
         }
 
         private static bool Literal(H.Expr e) => e is H.LiteralExpr { Value: H.IntegerConstant or H.FloatConstant };
+
+        /// <summary>
+        /// Two integer literals under an operator, computed when compiling: the literal of their result in
+        /// <paramref name="type"/> (the type the literals took), an error when the result does not fit in it (a constant
+        /// does not wrap: `i8 j = 100 + 100` is 200), null for anything else (a shift out of range, a division by zero:
+        /// the run time says).
+        /// </summary>
+        private H.Expr? Folded(BinaryOperator op, H.Expr left, H.Expr right, H.HirType type, BinaryExpr binary)
+        {
+            if (left is not H.LiteralExpr { Value: H.IntegerConstant x } || right is not H.LiteralExpr { Value: H.IntegerConstant y }
+                || type is not H.PrimitiveType { Kind: var kind } || !kind.IsInteger() || !contextual.Contains(left) || !contextual.Contains(right))
+                return null;
+            BigInteger? result = op switch
+            {
+                BinaryOperator.Add => x.Value + y.Value,
+                BinaryOperator.Subtract => x.Value - y.Value,
+                BinaryOperator.Multiply => x.Value * y.Value,
+                BinaryOperator.Divide when !y.Value.IsZero => BigInteger.Divide(x.Value, y.Value),
+                BinaryOperator.Remainder when !y.Value.IsZero => BigInteger.Remainder(x.Value, y.Value),
+                BinaryOperator.And => x.Value & y.Value,
+                BinaryOperator.Or => x.Value | y.Value,
+                BinaryOperator.Xor => x.Value ^ y.Value,
+                BinaryOperator.ShiftLeft when y.Value >= 0 && y.Value < kind.Bits() => x.Value << (int)y.Value,
+                BinaryOperator.ShiftRight when y.Value >= 0 && y.Value < kind.Bits() => x.Value >> (int)y.Value,
+                _ => null,
+            };
+            if (result is not { } value)
+                return null;
+            if (!Binder.Fits(value, kind))
+                return Failed("AN2028", $"`{source[binary.Span]}` is {value}, which does not fit in a `{Show(type)}` (its literals take that type)", binary.Span);
+            return Contextual(new H.LiteralExpr(new H.IntegerConstant(value, kind), type));
+        }
 
         /// <summary>A pointer's null: address 0.</summary>
         private static H.Expr NullPointer(H.HirType pointer) =>
@@ -3686,11 +3769,30 @@ namespace Antril.Binding
         /// 1 for a widening (numbers, a class to its base, a value to its nullable type, a literal that fits); null when it
         /// does not convert implicitly.
         /// </summary>
-        /// <summary>What a 128-bit (3) or 256-bit (5) integer adds to a conversion's cost, so narrower targets come first.</summary>
-        private static int WideCost(H.Primitive kind) => kind.Bits() switch { 128 => 3, 256 => 5, _ => 0 };
+        /// <summary>
+        /// Costs are in units of 4, so a widening's distance (how many widths up the target is) tells two widenings apart
+        /// without reordering the kinds: a widening to the next width (4) comes before one two widths up (5), both before
+        /// a conversion to a float (8), a wide integer (16+) or `any` (36).
+        /// </summary>
+        private const int Unit = 4;
+
+        /// <summary>What a 128-bit (12) or 256-bit (20) integer adds to a conversion's cost, so narrower targets come first.</summary>
+        private static int WideCost(H.Primitive kind) => kind.Bits() switch { 128 => 3 * Unit, 256 => 5 * Unit, _ => 0 };
 
         /// <summary>A float literal's distance from f64: f32, then f16, then the wide floats.</summary>
-        private static int FloatCost(H.Primitive kind) => kind.Bits() switch { 64 => 0, 32 => 1, 16 => 2, 128 => 3, _ => 5 };
+        private static int FloatCost(H.Primitive kind) => kind.Bits() switch { 64 => 0, 32 => Unit, 16 => 2 * Unit, 128 => 3 * Unit, _ => 5 * Unit };
+
+        /// <summary>
+        /// How many widths above <paramref name="from"/> the integer <paramref name="to"/> is, past the first (0 for the
+        /// next width up, 1 for the one after it…): `F(i16)` takes `F(i32)` over `F(i64)`, the nearest that holds it.
+        /// </summary>
+        private static int WidthSteps(H.Primitive from, H.Primitive to)
+        {
+            int steps = 0;
+            for (int bits = from.Bits() * 2; bits < to.Bits(); bits *= 2)
+                steps++;
+            return Math.Min(steps, Unit - 1);
+        }
 
         private int? Cost(H.Expr value, H.HirType target)
         {
@@ -3700,71 +3802,71 @@ namespace Antril.Binding
             if (from == target)
                 return 0;
             if (value is H.LiteralExpr { Value: H.NullConstant })
-                return target is H.NullableType or H.PointerType ? 1 : null;
+                return target is H.NullableType or H.PointerType ? Unit : null;
             // Any pointer is a `void*`.
             if (from is H.PointerType && target is H.PointerType { Target: var pointee } && pointee == H.HirType.Void)
-                return 1;
+                return Unit;
             // An integer type parameter: literals that fit all its types; to a number all its types widen to.
             if (NumericParam(target) is { } targetKinds)
             {
                 if (value is H.LiteralExpr { Value: H.IntegerConstant literal })
-                    return targetKinds.Where(k => k.IsInteger()).All(k => Binder.Fits(literal.Value, k)) ? 1 : null;
+                    return targetKinds.Where(k => k.IsInteger()).All(k => Binder.Fits(literal.Value, k)) ? Unit : null;
                 if (value is H.LiteralExpr { Value: H.FloatConstant })
-                    return targetKinds.All(k => k.IsFloat()) ? 1 : null;
+                    return targetKinds.All(k => k.IsFloat()) ? Unit : null;
                 // A primitive every one of its types holds (`T : float` takes an f32).
-                return from is H.PrimitiveType { Kind: var narrow } && targetKinds.All(k => Widens(narrow, k)) ? 2 : null;
+                return from is H.PrimitiveType { Kind: var narrow } && targetKinds.All(k => Widens(narrow, k)) ? 2 * Unit : null;
             }
             // A type parameter's value to `any`: boxed the way its type is once known (an object stays itself).
             if (from is H.GenericParamType && (IsAny(target) || target is H.NullableType { Inner: var anyInner } && IsAny(anyInner)))
-                return 2;
+                return 2 * Unit;
             if (Opaque(from) && (IsAny(target) || target is H.NullableType { Inner: var opaqueInner } && IsAny(opaqueInner)) && BoxedSymbol() is not null)
-                return 3;
+                return 3 * Unit;
             if (NumericParam(from) is { } fromKinds)
-                return target is H.PrimitiveType { Kind: var wide } && fromKinds.All(k => Widens(k, wide)) ? 1 : null;
+                return target is H.PrimitiveType { Kind: var wide } && fromKinds.All(k => Widens(k, wide)) ? Unit : null;
             if (value is H.LiteralExpr { Value: H.IntegerConstant integer } && target is H.PrimitiveType { Kind: var tk })
                 // A literal prefers i32, then a wider signed integer, then an unsigned one, then a float (`Max(3, 9)` takes the
                 // i32 overload, `WriteLine(42)` the i64 one when there is no i32).
                 // (a 128- or 256-bit integer comes after the floats: `F(5)` with F(i64) and F(i128) takes the i64 one).
-                return tk.IsInteger() ? Binder.Fits(integer.Value, tk) ? tk == H.Primitive.I32 ? 1 : (tk.IsSigned() ? 2 : 3) + WideCost(tk) : null : tk.IsFloat() ? 4 + FloatCost(tk) : null;
+                return tk.IsInteger() ? Binder.Fits(integer.Value, tk) ? tk == H.Primitive.I32 ? Unit : (tk.IsSigned() ? 2 * Unit : 3 * Unit) + WideCost(tk) : null : tk.IsFloat() ? 4 * Unit + FloatCost(tk) : null;
             if (from is H.PrimitiveType { Kind: var fk } && target is H.PrimitiveType { Kind: var k })
             {
                 if (fk.IsInteger() && k.IsInteger())
                 {
-                    // The nearest width wins: a u32 goes to u64 before u128 (and to f64 before a wide integer).
+                    // The nearest width wins: an i16 goes to i32 before i64, a u32 to u64 before u128 (and to f64 before a wide integer).
                     if (fk.IsSigned() == k.IsSigned())
-                        return k.Bits() > fk.Bits() ? 1 + WideCost(k) : null;
-                    return !fk.IsSigned() && k.IsSigned() && k.Bits() > fk.Bits() ? 1 + WideCost(k) : null;
+                        return k.Bits() > fk.Bits() ? Unit + WidthSteps(fk, k) + WideCost(k) : null;
+                    return !fk.IsSigned() && k.IsSigned() && k.Bits() > fk.Bits() ? Unit + WidthSteps(fk, k) + WideCost(k) : null;
                 }
                 if (fk.IsInteger() && k.IsFloat())
-                    return fk.Bits() > 64 ? null : 2; // a wide integer loses digits in a float: only with a cast
+                    return fk.Bits() > 64 ? null : 2 * Unit; // a wide integer loses digits in a float: only with a cast
                 if (fk.IsFloat() && k.IsFloat())
-                    return k.Bits() > fk.Bits() ? 1 + WideCost(k) : null;
+                    return k.Bits() > fk.Bits() ? Unit + WidthSteps(fk, k) + WideCost(k) : null;
                 return null;
             }
             // A value to a nullable of a wider value (`i64? x = 3`): widened, then wrapped.
             if (target is H.NullableType { Inner: var valueInner } && from is not H.NullableType && valueInner != from && !IsReference(valueInner))
-                return Cost(value, valueInner) is int widening ? widening + 1 : null;
+                return Cost(value, valueInner) is int widening ? widening + Unit : null;
             var fromInner = from is H.NullableType fn ? fn.Inner : from;
             var targetInner = target is H.NullableType tn ? tn.Inner : target;
             if (from is H.NullableType && target is not H.NullableType)
                 return null;
             // A class to itself or a base, with the same type arguments (a `Box<str>` is not a `Box<i32>`: there is no variance).
             if (binder.SymbolOf(targetInner) is { IsClass: true } tc && Ancestor(fromInner, tc) is var (ancestor, depth) && ancestor == targetInner)
-                return depth + (from is H.NullableType == target is H.NullableType ? 0 : 1);
+                return depth * Unit + (from is H.NullableType == target is H.NullableType ? 0 : Unit);
             if (target is H.NullableType && fromInner == targetInner)
-                return 1;
-            int wrap = from is H.NullableType == target is H.NullableType ? 0 : 1;
+                return Unit;
+            int wrap = from is H.NullableType == target is H.NullableType ? 0 : Unit;
             // An object to an interface it implements, or an interface to `any`: the same handle.
             if (IsInterface(targetInner) && IsReference(fromInner) && binder.Implements(fromInner, (H.NamedType)targetInner, ConstraintsOf))
-                return 1 + wrap;
+                return Unit + wrap;
             if (IsAny(targetInner) && IsInterface(fromInner))
-                return 1 + wrap;
+                return Unit + wrap;
             // A value to an interface it implements: boxed; to `any`: boxed, after every numeric widening (`WriteLine(42)`
             // takes the i64 overload, `WriteLine(point)` the `any` one).
             if (IsValueType(fromInner) && from is not H.NullableType && IsInterface(targetInner) && binder.Implements(fromInner, (H.NamedType)targetInner, ConstraintsOf))
-                return 2 + wrap;
+                return 2 * Unit + wrap;
             if (IsValueType(fromInner) && from is not H.NullableType && IsAny(targetInner))
-                return 9 + wrap;
+                return 9 * Unit + wrap;
             return null;
         }
 
@@ -3936,7 +4038,84 @@ namespace Antril.Binding
                         type = common;
                 }
             }
-            return new H.SwitchExpr(value, [.. arms.Select(a => new H.SwitchArm(a.Pattern, a.Guard, Convert(a.Value, type, a.Span)))], type);
+            var bound = arms.Select(a => new H.SwitchArm(a.Pattern, a.Guard, Convert(a.Value, type, a.Span))).ToList();
+            if (!bound.Any(a => a.Guard is null && CatchesAll(a.Pattern)))
+            {
+                // No `_` arm: a bool or an enum has every value named, or the missing one is reported; any other value
+                // that no arm matches throws (not the lowering's panic without a word).
+                if (Uncovered(value.Type, bound) is { } missing)
+                    return Failed("AN2147", $"the switch does not cover `{missing}`: add an arm for it, or `_ => …`", s.Span);
+                if (NoArmMatched(type, s.Span) is { } thrown)
+                    bound.Add(new H.SwitchArm(new H.DiscardPattern(), null, thrown));
+            }
+            return new H.SwitchExpr(value, [.. bound], type);
+        }
+
+        /// <summary>Whether a pattern matches every value (without a guard): `_`, `var x`, a test of the value's own type.</summary>
+        private static bool CatchesAll(H.Pattern pattern) => pattern switch
+        {
+            H.DiscardPattern => true,
+            H.BindingPattern { Inner: null } => true,
+            H.BindingPattern { Inner: { } inner } => CatchesAll(inner),
+            H.OrPattern or => CatchesAll(or.Left) || CatchesAll(or.Right),
+            _ => false,
+        };
+
+        /// <summary>
+        /// A value of a bool or a plain enum that no arm names, when the arms are constants (alone, in `|` patterns,
+        /// under `var x`); null when every value is named, or when an arm is of another shape (a range, `not`, a
+        /// guard: what it covers is not counted here).
+        /// </summary>
+        private string? Uncovered(H.HirType type, List<H.SwitchArm> arms)
+        {
+            List<(string Name, H.HirConstant Value)> all;
+            if (type == H.HirType.Bool)
+                all = [("true", new H.BoolConstant(true)), ("false", new H.BoolConstant(false))];
+            else if (type is H.NamedType && binder.SymbolOf(type) is { IsEnum: true, Definition.Kind: not H.TypeKind.Bitflags } symbol && symbol.Definition.Underlying is H.PrimitiveType)
+                all = [.. symbol.Definition.Fields.Where(f => f.Value is H.EnumConstant).Select(f => (f.Name, f.Value!))];
+            else
+                return null;
+            var named = new HashSet<H.HirConstant>();
+            bool Count(H.Pattern pattern)
+            {
+                switch (pattern)
+                {
+                    case H.ConstantPattern { Value: H.BoolConstant or H.EnumConstant } constant:
+                        named.Add(constant.Value);
+                        return true;
+                    case H.OrPattern or:
+                        return Count(or.Left) & Count(or.Right);
+                    case H.BindingPattern { Inner: { } inner }:
+                        return Count(inner);
+                    default:
+                        return false;
+                }
+            }
+            bool guarded = false;
+            foreach (var arm in arms)
+            {
+                if (arm.Guard is not null)
+                    guarded = true; // what a guard lets through is not counted: the arm may or may not cover its constants
+                else if (!Count(arm.Pattern))
+                    return null;
+            }
+            var missing = all.FirstOrDefault(v => !named.Contains(v.Value)).Name;
+            return missing is not null && guarded ? null : missing; // a guarded arm may cover what is left: the run time says
+        }
+
+        /// <summary>`throw new InvalidOperationError("…")` as an expression of <paramref name="type"/> (the core library's error type; null without it).</summary>
+        private H.Expr? NoArmMatched(H.HirType type, TextSpan span)
+        {
+            if (binder.Types.GetValueOrDefault("System.InvalidOperationError") is not { IsClass: true } error || binder.StringType is not { } text
+                || error.Constructors.FirstOrDefault(c => c.Parameters.Length == 1 && c.Parameters[0] == text) is not { } constructor)
+                return null;
+            var (line, _) = source.LineColumn(span.Start);
+            var message = new H.LiteralExpr(new H.StringConstant($"no arm of the switch at line {line} matched the value"), text);
+            var thrown = new H.NewExpr(constructor.Token, [message], [], error.Type);
+            // `if (true) throw …;` then a default: the lowering joins an `if` (the value after it has a block to go in),
+            // where a bare `throw` ends the block and leaves the value nowhere.
+            var always = new H.IfStmt(new H.LiteralExpr(new H.BoolConstant(true), H.HirType.Bool), new H.ThrowStmt(thrown), null);
+            return new H.BlockExpr([always], new H.DefaultExpr(type), type);
         }
 
         private H.Pattern Pattern(Pattern pattern, H.HirType type)
@@ -4373,9 +4552,11 @@ namespace Antril.Binding
             if (IsError(type))
                 return new H.BoolConstant(false);
             var within = binder.SymbolOf(type) is { IsEnum: true } e ? e : null;
+            int before = bag.Count;
             if (binder.Constant(expression, type, scope, bag, within) is { } constant)
                 return constant;
-            Error("AN2090", $"a pattern compares with a constant `{Show(type)}`", expression.Span);
+            if (bag.Count == before)
+                Error("AN2090", $"a pattern compares with a constant `{Show(type)}`", expression.Span);
             return new H.BoolConstant(false);
         }
     }

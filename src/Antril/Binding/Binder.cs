@@ -126,6 +126,7 @@ namespace Antril.Binding
             }
             foreach (var type in Types.Values)
                 CheckInterfaces(type);
+            CheckValueCycles();
             foreach (var unit in units)
                 CheckImports(unit);
             if (FindEntry() is { } entry)
@@ -173,12 +174,18 @@ namespace Antril.Binding
         private void CheckImports(CompilationUnit unit)
         {
             var seen = new Dictionary<string, string>(StringComparer.Ordinal);
+            // The core library (the compilation that declares System.String) still has an `import` of a namespace with
+            // nothing in it (Reflection.ant: System.Collections.Generic): not reported there until it is fixed.
+            bool coreLibrary = Types.GetValueOrDefault("System.String") is { IsExternal: false };
             foreach (var import in unit.Imports)
             {
                 string ns = import.Name.ToString();
-                if ((import.Alias is not null || import.Picked.Length > 0) && !Namespaces.Contains(ns))
+                if (!Namespaces.Contains(ns))
                 {
-                    Error("AN1084", $"there is no namespace `{ns}` to import from", unit.Source, import.Name.Span);
+                    if (import.Alias is not null || import.Picked.Length > 0)
+                        Error("AN1084", $"there is no namespace `{ns}` to import from", unit.Source, import.Name.Span);
+                    else if (!coreLibrary)
+                        Error("AN1084", $"there is no namespace `{ns}` to import: nothing is declared in it", unit.Source, import.Name.Span);
                     continue;
                 }
                 if (import.Alias is { } alias && !seen.TryAdd(alias, ns))
@@ -1070,9 +1077,10 @@ namespace Antril.Binding
 
         /// <summary>
         /// A type by name as seen from <paramref name="scope"/>: in the namespace and its parents (innermost first), then in
-        /// the namespaces the file imports.
+        /// the namespaces the file imports. A name two imported namespaces both have is ambiguous: reported in
+        /// <paramref name="bag"/> when one is given (and the name finds nothing), the first import's otherwise.
         /// </summary>
-        internal TypeSymbol? FindType(QualifiedName name, DeclarationScope scope, int? arity = null)
+        internal TypeSymbol? FindType(QualifiedName name, DeclarationScope scope, int? arity = null, DiagnosticBag? bag = null)
         {
             if (name.Parts is ["str"])
                 return StringSymbol;
@@ -1094,12 +1102,22 @@ namespace Antril.Binding
             }
             if (Imported(written, scope) is { } imported && Get(imported) is { } named)
                 return named;
+            TypeSymbol? first = null;
             foreach (var import in scope.Imports)
             {
-                if (Get($"{import}.{written}") is { } found)
-                    return found;
+                if (Get($"{import}.{written}") is not { } found || found == first)
+                    continue;
+                if (first is null)
+                {
+                    first = found;
+                    continue;
+                }
+                if (bag is null)
+                    break;
+                bag.Error("AN1107", $"`{written}` is both `{first.FullName}` and `{found.FullName}`, from two imports: write which one (or import it by name: `import {written} from {import};`)", scope.Source, name.Span);
+                return null;
             }
-            return null;
+            return first;
         }
 
         /// <summary>The HIR type a type syntax names (null after an error).</summary>
@@ -1137,9 +1155,10 @@ namespace Antril.Binding
                             return null;
                         }
                     }
-                    else if (FindType(named.Name, scope, named.Arguments.Length) is not { } found)
+                    else if (FindType(named.Name, scope, named.Arguments.Length, bag) is not { } found)
                     {
-                        bag.Error("AN1014", $"unknown type `{named.Name}`", scope.Source, named.Span);
+                        if (bag.Count == 0 || bag[^1].Code != "AN1107")
+                            bag.Error("AN1014", $"unknown type `{named.Name}`", scope.Source, named.Span);
                         return null;
                     }
                     else
@@ -1642,6 +1661,46 @@ namespace Antril.Binding
         /// A class with an array kept in its objects: every constructor gives the length (<c>: fixed(n)</c>), and there is at
         /// least one (the objects are made by them).
         /// </summary>
+        /// <summary>
+        /// A value cannot hold itself (directly, through another value, or through an inline array of one): it would have
+        /// no size. Reported once per cycle, at the field that closes it, instead of by the lowering without a position.
+        /// </summary>
+        private void CheckValueCycles()
+        {
+            var state = new Dictionary<H.NamedType, bool>(); // false: on the current path; true: known not to hold itself
+            bool Visit(H.NamedType value)
+            {
+                if (state.TryGetValue(value, out bool done))
+                    return done;
+                if (SymbolOf(value) is not { IsStruct: true } symbol)
+                    return true;
+                state[value] = false;
+                foreach (var field in symbol.Fields.Values.Where(f => !f.IsStatic))
+                {
+                    var type = symbol.Definition.Fields[field.Index].Type;
+                    while (type is H.InlineArrayType inline)
+                        type = inline.Element;
+                    if (value.Arguments.Length > 0)
+                        type = type.Substitute(value.Arguments);
+                    if (type is not H.NamedType held || SymbolOf(held) is not { IsStruct: true } heldSymbol)
+                        continue;
+                    if (state.TryGetValue(held, out bool heldDone) && !heldDone)
+                    {
+                        if (!symbol.IsExternal && field.Declaration is FieldDecl declaration)
+                            Error("AN1106", heldSymbol == symbol ? $"`{symbol.Name}` holds a `{symbol.Name}`: a value cannot contain itself (hold an object, or a `{symbol.Name}?`)"
+                                : $"`{field.Name}` holds a `{heldSymbol.Name}`, which holds a `{symbol.Name}` back: a value cannot contain itself through other values", symbol.Scope.Source, declaration.Type.Span);
+                        continue;
+                    }
+                    Visit(held);
+                }
+                state[value] = true;
+                return true;
+            }
+            foreach (var type in Types.Values)
+                if (type.IsStruct && !type.IsExternal)
+                    Visit((H.NamedType)type.Type);
+        }
+
         private void CheckInPlace(TypeSymbol owner)
         {
             if (owner.InPlace is not { } field || field.Declaration is not FieldDecl declaration)
@@ -2788,10 +2847,11 @@ namespace Antril.Binding
             }
             try
             {
+                int before = Diagnostics.Count;
                 var value = Constant(initializer, field.Type, scope, Diagnostics, field.Owner);
                 if (value is null)
                 {
-                    if (!field.ConstantFailed)
+                    if (!field.ConstantFailed && Diagnostics.Count == before)
                         Error("AN1091", $"the value of `{field.Name}` is not known when compiling: a constant is made of literals, other constants, enum values and operators, casts and `?:` on them", scope.Source, initializer.Span);
                     field.ConstantFailed = true;
                     return null;
@@ -2926,7 +2986,12 @@ namespace Antril.Binding
                 {
                     var left = Constant(binary.Left, type, scope, bag, within);
                     var right = Constant(binary.Right, type, scope, bag, within);
-                    return left is null || right is null ? null : Arithmetic(binary.Operator, left, right, type);
+                    if (left is null || right is null)
+                        return null;
+                    var computed = Arithmetic(binary.Operator, left, right, type, out var overflow);
+                    if (overflow is { } outside)
+                        bag.Error("AN1092", $"`{scope.Source[binary.Span]}` is {outside}, which does not fit in a `{H.Text.HirPrinter.Print(type, Assembly)}`", scope.Source, binary.Span);
+                    return computed;
                 }
                 case BinaryExpr { Operator: BinaryOperator.Add } concat when StringType is { } stringType && type == stringType:
                     return Constant(concat.Left, type, scope, bag, within) is H.StringConstant head && Constant(concat.Right, type, scope, bag, within) is H.StringConstant tail
@@ -3022,9 +3087,14 @@ namespace Antril.Binding
         private static bool Arithmetic(BinaryOperator op) => op is BinaryOperator.Add or BinaryOperator.Subtract or BinaryOperator.Multiply or BinaryOperator.Divide
             or BinaryOperator.Remainder or BinaryOperator.And or BinaryOperator.Or or BinaryOperator.Xor or BinaryOperator.ShiftLeft or BinaryOperator.ShiftRight;
 
-        /// <summary>An operator on two constants of <paramref name="type"/> (integers wrap as at run time; floats round as IEEE).</summary>
-        private H.HirConstant? Arithmetic(BinaryOperator op, H.HirConstant left, H.HirConstant right, H.HirType type)
+        /// <summary>
+        /// An operator on two constants of <paramref name="type"/> (floats round as IEEE). An integer result outside the
+        /// type is no constant: it comes back in <paramref name="overflow"/> for the caller to report (constants do not wrap:
+        /// `(i8)` says so when wrapping is meant).
+        /// </summary>
+        private H.HirConstant? Arithmetic(BinaryOperator op, H.HirConstant left, H.HirConstant right, H.HirType type, out BigInteger? overflow)
         {
+            overflow = null;
             switch (left, right)
             {
                 case (H.IntegerConstant a, H.IntegerConstant b) when type is H.PrimitiveType { Kind: var k }:
@@ -3043,7 +3113,9 @@ namespace Antril.Binding
                         BinaryOperator.ShiftRight when b.Value >= 0 && b.Value < k.Bits() => a.Value >> (int)b.Value,
                         _ => null,
                     };
-                    return result is { } r && Fits(r, k) ? new H.IntegerConstant(r, k) : null;
+                    if (result is { } r && !Fits(r, k))
+                        overflow = r;
+                    return result is { } fitting && Fits(fitting, k) ? new H.IntegerConstant(fitting, k) : null;
                 }
                 case (H.FloatConstant a, H.FloatConstant b) when type is H.PrimitiveType { Kind: var k }:
                 {
@@ -3393,7 +3465,7 @@ namespace Antril.Binding
         }
 
         /// <summary>The type an expression names (<c>Color</c>, <c>App.Color</c>), if it names one.</summary>
-        internal TypeSymbol? TypeNamed(Expr expression, DeclarationScope scope)
+        internal TypeSymbol? TypeNamed(Expr expression, DeclarationScope scope, DiagnosticBag? bag = null)
         {
             var parts = new List<string>();
             var at = expression;
@@ -3406,7 +3478,7 @@ namespace Antril.Binding
                 return null;
             parts.Insert(0, name.Name);
             var arguments = expression is MemberExpr last ? last.TypeArguments : name.TypeArguments;
-            return FindType(new QualifiedName([.. parts], expression.Span), scope, arguments.Length);
+            return FindType(new QualifiedName([.. parts], expression.Span), scope, arguments.Length, bag);
         }
     }
 

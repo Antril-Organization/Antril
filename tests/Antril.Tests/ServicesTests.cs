@@ -55,6 +55,9 @@ public sealed class ServicesTests : CheckedTest
     [Fact]
     public void Extension_methods_and_bracketed_values_in_completion_and_listings() => Extensions(Core());
 
+    [Fact]
+    public void The_decompiled_view_keeps_the_meaning_of_unary_minus_and_widening_casts() => Meaning(Core());
+
     /// <summary>A reference built for another GC (an editor's view of a `.queen` with a `gc:`-different dependency): what cannot cross is reported where it is used.</summary>
     private void Domains(H.HirAssembly core)
     {
@@ -136,6 +139,46 @@ public sealed class ServicesTests : CheckedTest
         Check("search: an exact name first", exact.Count > 0 && exact[0].FullName == "System.String.Substring", string.Join(", ", exact.Take(3).Select(h => h.FullName)));
         var view = list!.Members([H.HirType.I32]).First(m => m.Name == "Add");
         Check("a member seen through List<i32>: Add(i32 item)", AntrilView.Instance.Signature(view.Member, view) == "Add(i32 item)", AntrilView.Instance.Signature(view.Member, view));
+    }
+
+    /// <summary>
+    /// What the view prints binds back to the same HIR (M5, 2026-11-12): `- -x` is not `--x`, and a widening cast on an
+    /// operand of arithmetic stays (`(i64)x * y` computes in 64 bits), while one on a plain value is dropped
+    /// (`i64 c = x`).
+    /// </summary>
+    private void Meaning(H.HirAssembly core)
+    {
+        const string program = """
+            into namespace Shop
+            {
+                public class M
+                {
+                    public:
+                        Twice(i32 x) : i32 => - -x;
+                        Wide(i32 x, i32 y) : i64 => (i64)x * y;
+                        Plain(i32 x) : i64 { i64 c = x; return c; }
+                        Both(i32 x, i32 y) : i64 => (i64)x + (i64)y;
+                }
+            }
+            """;
+        var compiled = AntrilCompiler.Compile([new SourceText(program, "m.ant")], [core], "m");
+        Check("the program compiles", compiled.Success, string.Join("; ", compiled.Diagnostics.Take(3)));
+        if (!compiled.Success)
+            return;
+        var catalog = HirCatalog.Create(compiled.Assembly!, core);
+        string text = AntrilView.Instance.Decompile(catalog.Find("Shop.M")!);
+        Check("`- -x` keeps its space", text.Contains("- -x") && !text.Contains("--x"), text);
+        Check("`(i64)x * y` keeps its cast (the binder widened y too)", text.Contains("(i64)x * (i64)y"), text);
+        Check("`(i64)x + (i64)y` keeps both", text.Contains("(i64)x + (i64)y"), text);
+        Check("`i64 c = x` drops the implicit widening", text.Contains("i64 c = x;"), text);
+        var again = AntrilCompiler.Compile([new SourceText(text, "again.ant")], [core], "again");
+        Check("the decompiled text compiles again", again.Success, string.Join("; ", again.Diagnostics.Take(3)));
+        if (again.Success)
+        {
+            string twice = AntrilView.Instance.Decompile(HirCatalog.Create(again.Assembly!, core).Find("Shop.M")!);
+            // The first line names the assembly (`// Shop.M — again (decompiled from Larva HIR)`): the rest is the same.
+            Check("...to the same view", twice[twice.IndexOf('\n')..] == text[text.IndexOf('\n')..], twice);
+        }
     }
 
     private void Views(H.HirAssembly core, List<SourceText> library)
