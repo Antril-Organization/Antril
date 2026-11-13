@@ -185,10 +185,37 @@ namespace Antril.Binding
             return new NamespaceDecl(new QualifiedName(ns.Split('.'), at), [declaration], at);
         }
 
+        /// <summary>
+        /// The nodes under each declaration that may use a template (type names, tuples, calls by name), in the order
+        /// <see cref="AstRewriter.Descendants"/> meets them: found once per declaration (nodes are immutable, and an editor
+        /// analyzes the same declarations of the files it did not change again and again).
+        /// </summary>
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Node, Node[]> candidates = new();
+
+        private static bool IsCandidate(Node node) => node is NamedTypeSyntax or TupleExpr or CallExpr { Target: NameExpr or MemberExpr };
+
+        /// <summary>
+        /// <see cref="AstRewriter.Descendants"/> of <paramref name="root"/> that may use a template, in its order. A unit and
+        /// a namespace are made again by <see cref="Expand"/> each time (without the templates); what is in them is not.
+        /// </summary>
+        private static IEnumerable<Node> Candidates(Node root)
+        {
+            if (root is CompilationUnit or NamespaceDecl)
+            {
+                var children = AstRewriter.Children(root);
+                for (int c = children.Count - 1; c >= 0; c--)
+                    foreach (var node in Candidates(children[c]))
+                        yield return node;
+                yield break;
+            }
+            foreach (var node in candidates.GetValue(root, static r => [.. AstRewriter.Descendants(r).Where(IsCandidate)]))
+                yield return node;
+        }
+
         /// <summary>Uses of templates under a node, with their pack size: types by argument count, functions by call arity.</summary>
         private static IEnumerable<(Template, int)> Uses(Node root, List<Template> templates, HashSet<(string, int)> declared)
         {
-            foreach (var node in AstRewriter.Descendants(root))
+            foreach (var node in Candidates(root))
             {
                 switch (node)
                 {

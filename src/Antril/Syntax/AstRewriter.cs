@@ -47,6 +47,32 @@ namespace Antril.Syntax
             }
         }
 
+        /// <summary>
+        /// The nodes right under <paramref name="node"/>, in the order <see cref="Descendants"/> pushes them (so it visits
+        /// them last to first, each one's descendants together).
+        /// </summary>
+        public static List<Node> Children(Node node)
+        {
+            var children = new List<Node>();
+            foreach (var property in PropertiesOf(node.GetType()))
+            {
+                switch (property.GetValue(node))
+                {
+                    case Node child:
+                        children.Add(child);
+                        break;
+                    case Array array:
+                        foreach (var item in array)
+                        {
+                            if (item is Node element)
+                                children.Add(element);
+                        }
+                        break;
+                }
+            }
+            return children;
+        }
+
         private static object? Visit(object? value, Func<Node, Node?> map)
         {
             switch (value)
