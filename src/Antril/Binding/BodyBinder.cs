@@ -4024,7 +4024,84 @@ namespace Antril.Binding
                         type = common;
                 }
             }
-            return new H.SwitchExpr(value, [.. arms.Select(a => new H.SwitchArm(a.Pattern, a.Guard, Convert(a.Value, type, a.Span)))], type);
+            var bound = arms.Select(a => new H.SwitchArm(a.Pattern, a.Guard, Convert(a.Value, type, a.Span))).ToList();
+            if (!bound.Any(a => a.Guard is null && CatchesAll(a.Pattern)))
+            {
+                // No `_` arm: a bool or an enum has every value named, or the missing one is reported; any other value
+                // that no arm matches throws (not the lowering's panic without a word).
+                if (Uncovered(value.Type, bound) is { } missing)
+                    return Failed("AN2147", $"the switch does not cover `{missing}`: add an arm for it, or `_ => …`", s.Span);
+                if (NoArmMatched(type, s.Span) is { } thrown)
+                    bound.Add(new H.SwitchArm(new H.DiscardPattern(), null, thrown));
+            }
+            return new H.SwitchExpr(value, [.. bound], type);
+        }
+
+        /// <summary>Whether a pattern matches every value (without a guard): `_`, `var x`, a test of the value's own type.</summary>
+        private static bool CatchesAll(H.Pattern pattern) => pattern switch
+        {
+            H.DiscardPattern => true,
+            H.BindingPattern { Inner: null } => true,
+            H.BindingPattern { Inner: { } inner } => CatchesAll(inner),
+            H.OrPattern or => CatchesAll(or.Left) || CatchesAll(or.Right),
+            _ => false,
+        };
+
+        /// <summary>
+        /// A value of a bool or a plain enum that no arm names, when the arms are constants (alone, in `|` patterns,
+        /// under `var x`); null when every value is named, or when an arm is of another shape (a range, `not`, a
+        /// guard: what it covers is not counted here).
+        /// </summary>
+        private string? Uncovered(H.HirType type, List<H.SwitchArm> arms)
+        {
+            List<(string Name, H.HirConstant Value)> all;
+            if (type == H.HirType.Bool)
+                all = [("true", new H.BoolConstant(true)), ("false", new H.BoolConstant(false))];
+            else if (type is H.NamedType && binder.SymbolOf(type) is { IsEnum: true, Definition.Kind: not H.TypeKind.Bitflags } symbol && symbol.Definition.Underlying is H.PrimitiveType)
+                all = [.. symbol.Definition.Fields.Where(f => f.Value is H.EnumConstant).Select(f => (f.Name, f.Value!))];
+            else
+                return null;
+            var named = new HashSet<H.HirConstant>();
+            bool Count(H.Pattern pattern)
+            {
+                switch (pattern)
+                {
+                    case H.ConstantPattern { Value: H.BoolConstant or H.EnumConstant } constant:
+                        named.Add(constant.Value);
+                        return true;
+                    case H.OrPattern or:
+                        return Count(or.Left) & Count(or.Right);
+                    case H.BindingPattern { Inner: { } inner }:
+                        return Count(inner);
+                    default:
+                        return false;
+                }
+            }
+            bool guarded = false;
+            foreach (var arm in arms)
+            {
+                if (arm.Guard is not null)
+                    guarded = true; // what a guard lets through is not counted: the arm may or may not cover its constants
+                else if (!Count(arm.Pattern))
+                    return null;
+            }
+            var missing = all.FirstOrDefault(v => !named.Contains(v.Value)).Name;
+            return missing is not null && guarded ? null : missing; // a guarded arm may cover what is left: the run time says
+        }
+
+        /// <summary>`throw new InvalidOperationError("…")` as an expression of <paramref name="type"/> (the core library's error type; null without it).</summary>
+        private H.Expr? NoArmMatched(H.HirType type, TextSpan span)
+        {
+            if (binder.Types.GetValueOrDefault("System.InvalidOperationError") is not { IsClass: true } error || binder.StringType is not { } text
+                || error.Constructors.FirstOrDefault(c => c.Parameters.Length == 1 && c.Parameters[0] == text) is not { } constructor)
+                return null;
+            var (line, _) = source.LineColumn(span.Start);
+            var message = new H.LiteralExpr(new H.StringConstant($"no arm of the switch at line {line} matched the value"), text);
+            var thrown = new H.NewExpr(constructor.Token, [message], [], error.Type);
+            // `if (true) throw …;` then a default: the lowering joins an `if` (the value after it has a block to go in),
+            // where a bare `throw` ends the block and leaves the value nowhere.
+            var always = new H.IfStmt(new H.LiteralExpr(new H.BoolConstant(true), H.HirType.Bool), new H.ThrowStmt(thrown), null);
+            return new H.BlockExpr([always], new H.DefaultExpr(type), type);
         }
 
         private H.Pattern Pattern(Pattern pattern, H.HirType type)

@@ -826,6 +826,18 @@ public sealed unsafe class AntrilTests : CheckedTest
             ("import T from A; import B; into namespace A { public class T { } } into namespace B { public class T { } public class U { } } F() { T t = new T(); U u = new U(); }", "", "…and one imported by name wins"),
             ("import Nope; F() { }", "AN1084", "an import of a namespace that does not exist"),
             ("import A; into namespace A { public class T { } } F() { T t = new T(); }", "", "an import of a namespace that exists"),
+            ("public enum C { R, G, B } F(C c) : i32 => c switch { C.R => 1, C.G => 2 };", "AN2147", "a switch expression over an enum that misses a member, without `_`"),
+            ("F(bool b) : i32 => b switch { true => 1 };", "AN2147", "…over a bool that misses `false`"),
+            ("public enum C { R, G, B } F(C c) : i32 => c switch { C.R => 1, C.G or C.B => 2 };", "", "every member named (in an or-pattern too)"),
+            ("F(bool b) : i32 => b switch { true => 1, false => 0 };", "", "both bools named"),
+            ("public enum C { R, G, B } F(C c) : i32 => c switch { C.R => 1, _ => 2 };", "", "a `_` arm covers the rest"),
+            ("public enum C { R, G, B } F(C c) : i32 => c switch { C.R => 1, var o when o == C.G => 2, C.B => 3 };", "", "a guarded arm: what it covers is not counted (the run time says)"),
+            ("F() : str { return \"\\x41\"; }", "AN0008", "an unknown escape"),
+            ("F() : u16 => '\\q';", "AN0008", "…in a character literal"),
+            ("F() : u16 => '\\u12';", "AN0008", "`\\u` with too few digits"),
+            ("F() : u32 => '\\U00110000';", "AN0008", "`\\U` beyond U+10FFFF"),
+            ("F() : u16 { u16 a = '\\u0041'; return a; }", "", "`\\uXXXX`"),
+            ("F() : u32 { u32 a = '\\U0001F600'; return a; }", "", "`\\U000XXXXX` beyond the BMP"),
         ];
         foreach (var (text, code, what) in wrong)
         {
