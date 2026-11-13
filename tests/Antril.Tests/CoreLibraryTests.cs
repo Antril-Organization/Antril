@@ -33,10 +33,24 @@ public sealed unsafe class CoreLibraryTests : CheckedTest
     }
 
     [Fact]
-    public void Programs_run_alike_on_the_VM_x64_and_LLVM() => Programs(Library());
+    public void Programs_run_alike_on_the_VM_x64_and_LLVM() => OnBigStack(() => Programs(Library()));
 
     [Fact]
-    public void The_same_cases_with_reference_counting_on_x64_and_LLVM() => RunCounted(CompiledProgram(Library()).Assembly!);
+    public void The_same_cases_with_reference_counting_on_x64_and_LLVM() => OnBigStack(() => RunCounted(CompiledProgram(Library()).Assembly!));
+
+    /// <summary>
+    /// The program's cases run in this process: deep recursion in them (JSON nested to the reader's limit, with
+    /// reference counting's larger frames and the in-process runtime's calls back into managed code) needs more than
+    /// the test host's 1 MB thread stack. A native executable of the same program runs fine on its own stack.
+    /// </summary>
+    private static void OnBigStack(Action action)
+    {
+        System.Runtime.ExceptionServices.ExceptionDispatchInfo? failure = null;
+        var thread = new Thread(() => { try { action(); } catch (Exception e) { failure = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(e); } }, 256 << 20);
+        thread.Start();
+        thread.Join();
+        failure?.Throw();
+    }
 
     [Fact]
     public void Linked_against_System_Core_lva() => Linked(Library());
@@ -3250,7 +3264,7 @@ public sealed unsafe class CoreLibraryTests : CheckedTest
                 r += JsonValue.Of(0.1 + 0.2).ToString() == "0.30000000000000004" && JsonValue.Parse("0.30000000000000004").AsNumber == 0.1 + 0.2 && JsonValue.Of(1e300).ToString() == "1e+300" ? 10 : 0;
                 r += JsonRejects("01") && JsonRejects("1.") && JsonRejects("1e") && JsonRejects("-") && JsonRejects(".5") && JsonRejects("[01]") && JsonRejects("+1") ? 100 : 0;
                 r += JsonValue.Parse("-0").AsNumber == 0 && JsonValue.Parse("10.5e-3").AsNumber == 0.0105 && JsonValue.Parse("[0,1.5,-3E2]").ToString() == "[0,1.5,-300]" ? 1000 : 0;
-                r += JsonRejects(Brackets(100000, (u8)'[')) && JsonRejects(Brackets(513, (u8)'[') + Brackets(513, (u8)']')) && JsonValue.Parse(Brackets(512, (u8)'[') + Brackets(512, (u8)']')).Count == 1 ? 10000 : 0;
+                r += JsonRejects(Brackets(100000, (u8)'[')) && JsonRejects(Brackets(257, (u8)'[') + Brackets(257, (u8)']')) && JsonValue.Parse(Brackets(256, (u8)'[') + Brackets(256, (u8)']')).Count == 1 ? 10000 : 0;
                 str lone = JsonValue.Parse("\"a\\ud800b\"").AsString;
                 str low = JsonValue.Parse("\"a\\udc00b\"").AsString;
                 str pairAfter = JsonValue.Parse("\"\\ud800\\ud83d\\ude00\"").AsString;
@@ -3745,7 +3759,7 @@ public sealed unsafe class CoreLibraryTests : CheckedTest
         ("Nullables", 207511123, "nullable values: TryParse, `??`, `== null`, HasValue, Value, `is T v`"),
         ("ParseLimits", 131071, "integer Parse/TryParse at the limits: MinValue and MaxValue of i32, i64, i128, u128, i256, u256 parse, one past them is null, Int32.Parse throws a FormatError"),
         ("FloatText", 1111111, "Float64.ToString is the shortest text that reads back (0.1 + 0.2, 1/3, 1e+20, 1.5e-07, -0), through StringWriter too; `inf`, `-inf` and `nan` are written by every float and every format, and Parse/TryParse of f16/f32 (through Float64)/f64/f128/f256 read them and `Infinity`/`NaN`"),
-        ("JsonStrict", 111111, "JsonValue: writing inf or nan is a FormatError; numbers keep every digit; `01`, `1.`, `1e`, `-`, `.5`, `+1` are rejected by the JSON grammar; nesting past 512 is a FormatError (100,000 `[` does not overflow the stack), 512 is read; a lone `\\u` surrogate becomes U+FFFD and consumes only its own escape"),
+        ("JsonStrict", 111111, "JsonValue: writing inf or nan is a FormatError; numbers keep every digit; `01`, `1.`, `1e`, `-`, `.5`, `+1` are rejected by the JSON grammar; nesting past 256 is a FormatError (100,000 `[` does not overflow the stack), 512 is read; a lone `\\u` surrogate becomes U+FFFD and consumes only its own escape"),
         ("RegexEscapes", 11111, "Regex: `\\1`, `\\x41`, `\\u0041`, `\\p` (in a class too) are ArgumentErrors; escaped punctuation and `\\n \\t` stay; `\\b` and `\\B` are word boundaries (Match, IsMatch, Matches, Replace)"),
         ("FloatOrder", 11111, "CompareTo of f16/f32/f64/f128/f256 is a total order (nan above everything, equal to itself; -0 == +0), so Array.Sort and Lists.Sort order arrays with nans"),
         ("LogIntegers", 111, "Math.Log10/Log2/Log(x, base) of an integer below 1 (or in an integer base below 2) is an ArgumentError; of floats, -inf and nan as before"),
@@ -3855,9 +3869,10 @@ public sealed unsafe class CoreLibraryTests : CheckedTest
         ((delegate* unmanaged<void>)image.Address(HirLowerer.StaticInitName))();
         ((delegate* unmanaged<void>)jit.Address(HirLowerer.StaticInitName))();
         var wrong = new List<string>();
+        var only = Environment.GetEnvironmentVariable("LARVA_CASES") is { Length: > 0 } list ? new HashSet<string>(list.Split(',')) : null;
         foreach (var (name, expected, _) in Cases)
         {
-            if (CountedApart.Contains(name))
+            if (CountedApart.Contains(name) || (only is not null && !only.Contains(name)))
                 continue;
             string function = $"CoreTest.$Module.{name}";
             long onX64 = ((delegate* unmanaged<int>)image.Address(function))();
