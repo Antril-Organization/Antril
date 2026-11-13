@@ -707,6 +707,13 @@ namespace Antril.Binding
         /// <summary>The local constants (<c>const T x = v;</c>) declared: their values (a value made of constants: none).</summary>
         private readonly Dictionary<int, (H.HirConstant? Value, H.HirType Type)> localConstants = [];
 
+        /// <summary>
+        /// The integer literals whose type came from where they stand (`i8 j = 100`: an i8), and what folding them
+        /// gives: an operator on two of them is computed when compiling and does not wrap. A suffixed or cast literal
+        /// (`1i128 << 127`, `(u256)0 - (u256)1`) says its type itself and keeps the run time's arithmetic.
+        /// </summary>
+        private readonly HashSet<H.Expr> contextual = new(ReferenceEqualityComparer.Instance);
+
         /// <summary>The values of the local constants in scope, by name, for the constants that name them.</summary>
         private (H.HirConstant Value, H.HirType Type)? LocalConstant(string name) =>
             LookupLocal(name) is { } index && localConstants.TryGetValue(index, out var found) && found.Value is { } value ? (value, found.Type) : null;
@@ -1015,6 +1022,7 @@ namespace Antril.Binding
                     var type = Resolve(cast.Type) ?? ErrorType;
                     binder.CheckDeclared(type, OwnGeneric, source, cast.Type.Span);
                     var value = Expression(cast.Operand, type);
+                    contextual.Remove(value); // `(u256)0 - (u256)1`: a cast literal says its type itself, and wraps as the run time does
                     return Convert(value, type, cast.Span, explicitly: true);
                 }
                 case IsExpr test:
@@ -1148,15 +1156,21 @@ namespace Antril.Binding
             if (expected is not null && ParamLiteral(value, expected) is { } unit)
                 return unit;
             if (expected is H.PrimitiveType { Kind: var kind } && kind.IsInteger() && Binder.Fits(value, kind))
-                return new H.LiteralExpr(new H.IntegerConstant(value, kind), expected);
+                return Contextual(new H.LiteralExpr(new H.IntegerConstant(value, kind), expected));
             if (expected is H.PrimitiveType { Kind: var floatKind } && floatKind.IsFloat())
                 return new H.LiteralExpr(FloatOf(value, floatKind), expected);
             foreach (var fallback in new[] { H.Primitive.I32, H.Primitive.I64, H.Primitive.U64, H.Primitive.I128 })
             {
                 if (Binder.Fits(value, fallback))
-                    return new H.LiteralExpr(new H.IntegerConstant(value, fallback), H.HirType.Of(fallback));
+                    return Contextual(new H.LiteralExpr(new H.IntegerConstant(value, fallback), H.HirType.Of(fallback)));
             }
             return Failed("AN2028", $"{value} does not fit in any integer type", span);
+        }
+
+        private H.LiteralExpr Contextual(H.LiteralExpr literal)
+        {
+            contextual.Add(literal);
+            return literal;
         }
 
         // ── Names and members ──────────────────────────────
@@ -3144,7 +3158,7 @@ namespace Antril.Binding
         private H.Expr? Folded(BinaryOperator op, H.Expr left, H.Expr right, H.HirType type, BinaryExpr binary)
         {
             if (left is not H.LiteralExpr { Value: H.IntegerConstant x } || right is not H.LiteralExpr { Value: H.IntegerConstant y }
-                || type is not H.PrimitiveType { Kind: var kind } || !kind.IsInteger())
+                || type is not H.PrimitiveType { Kind: var kind } || !kind.IsInteger() || !contextual.Contains(left) || !contextual.Contains(right))
                 return null;
             BigInteger? result = op switch
             {
@@ -3164,7 +3178,7 @@ namespace Antril.Binding
                 return null;
             if (!Binder.Fits(value, kind))
                 return Failed("AN2028", $"`{source[binary.Span]}` is {value}, which does not fit in a `{Show(type)}` (its literals take that type)", binary.Span);
-            return new H.LiteralExpr(new H.IntegerConstant(value, kind), type);
+            return Contextual(new H.LiteralExpr(new H.IntegerConstant(value, kind), type));
         }
 
         /// <summary>A pointer's null: address 0.</summary>
