@@ -27,10 +27,14 @@ namespace Antril.Services
         /// </summary>
         public ParseCache Parsed { get; } = new();
 
+        /// <summary>Binds the other files' bodies too, as compiling does (for tests: what an analysis without them must equal).</summary>
+        internal bool EveryBody { get; init; }
+
         /// <summary>
         /// Parses and binds <paramref name="document"/> (with <paramref name="others"/>, the rest of its program) as it is,
         /// errors and all, recording what each part of it is. A file whose text is the one an earlier analysis parsed is not
-        /// parsed again (<see cref="Parsed"/>).
+        /// parsed again (<see cref="Parsed"/>); of the other files only the declarations are bound (and generic code), since
+        /// the analysis keeps only what is in <paramref name="document"/>.
         /// </summary>
         public AntrilAnalysis Analyze(SourceText document, IReadOnlyList<SourceText>? others = null, string assemblyName = "Program")
         {
@@ -48,7 +52,7 @@ namespace Antril.Services
             var recorder = new BindingRecorder();
             var expanded = Variadic.Expand(units, diagnostics, References, table);
             timings["variadic"] = watch.ElapsedMilliseconds;
-            var binder = new Binder(assemblyName, expanded, diagnostics, parallel: true, References) { Recorder = recorder, Operators = table, Options = Options };
+            var binder = new Binder(assemblyName, expanded, diagnostics, parallel: true, References) { Recorder = recorder, Operators = table, Options = Options, BodiesOf = EveryBody ? null : document };
             binder.ExternalAssemblies.UnionWith(ExternalAssemblies);
             var bindWatch = Stopwatch.StartNew();
             var assembly = binder.Bind(timings);

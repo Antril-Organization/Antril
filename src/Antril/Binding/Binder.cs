@@ -62,6 +62,14 @@ namespace Antril.Binding
         /// <summary>Records what binding finds where (set when analyzing a document for an editor).</summary>
         internal BindingRecorder? Recorder { get; init; }
 
+        /// <summary>
+        /// The one file whose bodies are wanted (an editor's document: what it keeps of an analysis is that file's
+        /// diagnostics and recordings, and a body's are all in the file of its scope). The other files' bodies are not
+        /// bound, except generic code: binding it may promise conversions of its type parameters (`T` converts to `f64`),
+        /// which its callers are checked against. Null when compiling (every body is bound).
+        /// </summary>
+        internal SourceText? BodiesOf { get; init; }
+
         /// <summary>What the project sets (its default access, whether borrows are on).</summary>
         public AntrilOptions Options { get; init; } = AntrilOptions.Default;
 
@@ -2727,12 +2735,15 @@ namespace Antril.Binding
             AddStaticConstructors();
             foreach (var type in Types.Values.Concat(Modules.Values))
                 type.Seal();
-            var bags = new DiagnosticBag[bodies.Count];
+            var bound = BodiesOf is { } only
+                ? bodies.Where(m => m.Scope.Source == only || m.GenericCount > 0 || m.Owner.GenericCount > 0).ToList()
+                : bodies;
+            var bags = new DiagnosticBag[bound.Count];
             void One(int i)
             {
                 var bag = new DiagnosticBag();
                 bags[i] = bag;
-                var method = bodies[i];
+                var method = bound[i];
                 try
                 {
                     method.Definition.Body = new BodyBinder(this, method, bag).Bind();
@@ -2743,10 +2754,10 @@ namespace Antril.Binding
                     bag.Error("AN9999", $"internal error binding `{method}`: {e.Message}", source, method.Function?.NameSpan ?? method.Constructor?.HeadSpan ?? default);
                 }
             }
-            if (parallel && bodies.Count > 16)
-                Parallel.For(0, bodies.Count, One);
+            if (parallel && bound.Count > 16)
+                Parallel.For(0, bound.Count, One);
             else
-                for (int i = 0; i < bodies.Count; i++)
+                for (int i = 0; i < bound.Count; i++)
                     One(i);
             foreach (var bag in bags)
                 Diagnostics.AddRange(bag);

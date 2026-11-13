@@ -53,6 +53,9 @@ public sealed class ServicesTests : CheckedTest
     public void Analysis_and_completion_are_fast_enough() => Speed(Core(), CoreLibrary.Lva);
 
     [Fact]
+    public void Editing_a_body_again_analyzes_as_a_fresh_analysis_does() => Incremental(Core());
+
+    [Fact]
     public void Extension_methods_and_bracketed_values_in_completion_and_listings() => Extensions(Core());
 
     [Fact]
@@ -563,6 +566,85 @@ public sealed class ServicesTests : CheckedTest
         int lines = bigSource.Text.Count(c => c == '\n');
         Check("analysis fast enough for typing (a small document under 50 ms)", analyze < 50, $"{analyze:0.0} ms");
         Check("completion under 5 ms", complete < 5, $"{complete:0.00} ms");
+    }
+
+    /// <summary>
+    /// An editor analyzes the program again on every change: the files that did not change are not parsed again, and only
+    /// the document's bodies are bound (the other files' declarations, and their generic code). What it gives must be what a
+    /// fresh analysis gives, and what one binding every body gives: the document's problems, completion and hover.
+    /// </summary>
+    private void Incremental(H.HirAssembly core)
+    {
+        const string shapes = """
+            import System;
+
+            into namespace Shop
+            {
+                public class Shape
+                {
+                    public:
+                        i32 Size;
+                        new(i32 size) { Size = size; }
+                        /// The area.
+                        Area() : i32 => Size * Size;
+                        Broken() : i32 { return missing; }
+                }
+
+                Scale<T : number>(T x) : f64 => (f64)x * 2.0;
+
+                Count(i32 to) : Iterator<i32>
+                {
+                    loop (i32 i = 0..to)
+                        yield i;
+                }
+
+                i32 Seed = 7;
+            }
+            """;
+        const string main = """
+            import System;
+
+            into namespace Shop
+            {
+                Main() : i32
+                {
+                    Shape s = new Shape(3);
+                    i32 total = s.Area() + Seed;
+                    f64 d = Scale(total);
+                    loop (i32 v in Count(3))
+                        total += v;
+                    s.
+                    return total + nothing;
+                }
+            }
+            """;
+        string Text(string size) => main.Replace("\r\n", "\n").Replace("new Shape(3)", $"new Shape({size})");
+        var other = new SourceText(shapes.Replace("\r\n", "\n"), "shapes.ant");
+        string Seen(AntrilWorkspace workspace, AntrilAnalysis analysis)
+        {
+            string text = analysis.Text;
+            var problems = analysis.Problems.Select(p => $"{p.Line}:{p.Column}-{p.EndLine}:{p.EndColumn} {p.Code} {p.Message}");
+            var completion = workspace.Service.Complete(analysis, text.IndexOf("s.\n", StringComparison.Ordinal) + 2).Items.Select(i => $"{i.Label}/{i.Kind}/{i.Detail}");
+            var hover = workspace.Service.Hover(analysis, text.IndexOf("Area()", StringComparison.Ordinal) + 1);
+            var tokens = analysis.Tokens.Select(t => $"{t.Offset}+{t.Length}:{t.Kind}");
+            return string.Join("\n", problems) + "\n--\n" + string.Join(", ", completion) + "\n--\n" + hover?.Signature + " " + hover?.Doc + "\n--\n" + string.Join(" ", tokens);
+        }
+        var editor = new AntrilWorkspace([core]);
+        editor.Analyze(new SourceText(Text("3"), "main.ant"), [other]);
+        foreach (string size in new[] { "4", "5" })
+        {
+            var edited = editor.Analyze(new SourceText(Text(size), "main.ant"), [new SourceText(other.Text, other.Path)]);
+            var freshWorkspace = new AntrilWorkspace([core]);
+            var fresh = freshWorkspace.Analyze(new SourceText(Text(size), "main.ant"), [new SourceText(other.Text, other.Path)]);
+            var wholeWorkspace = new AntrilWorkspace([core]) { EveryBody = true };
+            var whole = wholeWorkspace.Analyze(new SourceText(Text(size), "main.ant"), [new SourceText(other.Text, other.Path)]);
+            string seen = Seen(editor, edited);
+            Check($"edited to `Shape({size})`: the same problems, completion, hover and tokens as a fresh analysis", seen == Seen(freshWorkspace, fresh), seen + "\n=====\n" + Seen(freshWorkspace, fresh));
+            Check("... and as an analysis that binds every body", seen == Seen(wholeWorkspace, whole), seen + "\n=====\n" + Seen(wholeWorkspace, whole));
+            Check("... which are the document's own (`nothing`, not the other file's `missing`) and offer the members of Shape (`nothing`, not the other file's `missing`) and offer the members of Shape",
+                edited.Problems.Any(p => p.Message.Contains("`nothing`")) && !edited.Problems.Any(p => p.Message.Contains("`missing`")) && seen.Contains("Area/"), seen);
+        }
+        Check("the file that did not change was parsed once", editor.Parsed.Hits == 2 && editor.Parsed.Misses == 4, $"{editor.Parsed.Hits} hits, {editor.Parsed.Misses} misses");
     }
 
     private void Extensions(H.HirAssembly core)
