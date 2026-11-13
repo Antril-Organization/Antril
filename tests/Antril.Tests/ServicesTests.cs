@@ -161,6 +161,7 @@ public sealed class ServicesTests : CheckedTest
                         Wide(i32 x, i32 y) : i64 => (i64)x * y;
                         Plain(i32 x) : i64 { i64 c = x; return c; }
                         Both(i32 x, i32 y) : i64 => (i64)x + (i64)y;
+                        Tested(M m) : bool => (any)m is M;
                 }
             }
             """;
@@ -174,6 +175,7 @@ public sealed class ServicesTests : CheckedTest
         Check("`(i64)x * y` keeps its cast (the binder widened y too)", text.Contains("(i64)x * (i64)y"), text);
         Check("`(i64)x + (i64)y` keeps both", text.Contains("(i64)x + (i64)y"), text);
         Check("`i64 c = x` drops the implicit widening", text.Contains("i64 c = x;"), text);
+        Check("`(any)m is M` keeps the upcast it tests from", text.Contains("(any)m is M"), text);
         var again = AntrilCompiler.Compile([new SourceText(text, "again.ant")], [core], "again");
         Check("the decompiled text compiles again", again.Success, string.Join("; ", again.Diagnostics.Take(3)));
         if (again.Success)

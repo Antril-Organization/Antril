@@ -362,9 +362,9 @@ namespace Antril.Services
                 case H.ConvertExpr c:
                     return Conversion(c, minimum);
                 case H.IsExpr i:
-                    return Wrap($"{Expr(i.Value, 11)} is {Pattern(i.Pattern)}", 10, minimum);
+                    return Wrap($"{Tested(i.Value)} is {Pattern(i.Pattern)}", 10, minimum);
                 case H.AsExpr a:
-                    return Wrap($"{Expr(a.Value, 11)} as {Type(a.Type is H.NullableType n ? n.Inner : a.Type)}", 10, minimum);
+                    return Wrap($"{Tested(a.Value)} as {Type(a.Type is H.NullableType n ? n.Inner : a.Type)}", 10, minimum);
                 case H.SwitchExpr s:
                     return Wrap($"{Expr(s.Value, 15)} switch {{ {string.Join(", ", s.Arms.Select(arm => Pattern(arm.Pattern) + (arm.Guard is { } g ? " when " + Expr(g, 0) : "") + " => " + Expr(arm.Value, 1)))} }}", 1, minimum);
                 case H.ConditionalExpr c:
@@ -535,6 +535,15 @@ namespace Antril.Services
             e is H.ConvertExpr { Kind: H.ConversionKind.Numeric } c && Widening(c.Value.Type, c.Type)
                 ? Wrap($"({Type(c.Type)}){Expr(c.Value, 14)}", 14, minimum)
                 : Expr(e, minimum);
+
+        /// <summary>
+        /// The value of <c>is</c> or <c>as</c>: an upcast stays written, since what the test may find depends on the type it
+        /// starts from (`(any)this is String&lt;u8&gt;` is asked at run time; `this is String&lt;u8&gt;` of a `String&lt;T&gt;` is not the same question).
+        /// </summary>
+        private string Tested(H.Expr e) =>
+            e is H.ConvertExpr { Kind: H.ConversionKind.Upcast } c
+                ? Wrap($"({Type(c.Type)}){Expr(c.Value, 14)}", 14, 11)
+                : Expr(e, 11);
 
         private string Conversion(H.ConvertExpr c, int minimum)
         {

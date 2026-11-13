@@ -4521,6 +4521,24 @@ namespace Antril.Binding
             return type is { IsEnum: false } ? type : null;
         }
 
+        /// <summary>
+        /// Whether <paramref name="a"/> and <paramref name="b"/> may be the same type once the type parameters in them are
+        /// known: equal where both are closed, and anything where either has a type parameter.
+        /// </summary>
+        private static bool MayBeSame(H.HirType a, H.HirType b) => (a, b) switch
+        {
+            (H.GenericParamType, _) or (_, H.GenericParamType) => true,
+            (H.NamedType x, H.NamedType y) => x.Type == y.Type && x.Arguments.Length == y.Arguments.Length
+                && x.Arguments.Zip(y.Arguments).All(p => MayBeSame(p.First, p.Second)),
+            (H.ArrayType x, H.ArrayType y) => x.Rank == y.Rank && MayBeSame(x.Element, y.Element),
+            (H.NullableType x, H.NullableType y) => MayBeSame(x.Inner, y.Inner),
+            (H.PointerType x, H.PointerType y) => x.Mutable == y.Mutable && MayBeSame(x.Target, y.Target),
+            (H.ReferenceType x, H.ReferenceType y) => x.Mutable == y.Mutable && MayBeSame(x.Target, y.Target),
+            (H.FuncType x, H.FuncType y) => x.Parameters.Length == y.Parameters.Length && MayBeSame(x.Result, y.Result)
+                && x.Parameters.Zip(y.Parameters).All(p => MayBeSame(p.First, p.Second)),
+            _ => a == b || a is H.PackExpansionType || b is H.PackExpansionType,
+        };
+
         private H.Pattern TypeTest(H.HirType target, H.HirType type, TextSpan span)
         {
             if (IsError(target) || IsError(type))
@@ -4530,8 +4548,8 @@ namespace Antril.Binding
             if (binder.SymbolOf(inner) is { IsClass: true } tc && binder.SymbolOf(valueInner) is { IsClass: true } vc)
             {
                 // One must be the other or derive from it, with the type arguments the base gets matching (a `Box<i32>` is
-                // never a `Box<str>`).
-                bool related = Ancestor(inner, vc) is var (up, _) && up == valueInner || Ancestor(valueInner, tc) is var (down, _) && down == inner;
+                // never a `Box<str>`); a type parameter may be any type at run time (a `String<T>` may be a `String<u8>`).
+                bool related = Ancestor(inner, vc) is var (up, _) && MayBeSame(up, valueInner) || Ancestor(valueInner, tc) is var (down, _) && MayBeSame(down, inner);
                 if (!related)
                     Error("AN2088", $"a `{Show(type)}` is never a `{Show(inner)}`", span);
                 return new H.TypePattern(inner);
