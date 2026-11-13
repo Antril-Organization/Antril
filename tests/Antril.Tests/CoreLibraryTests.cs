@@ -3190,6 +3190,221 @@ public sealed unsafe class CoreLibraryTests : CheckedTest
                 return r;
             }
 
+            public FloatText() : i32
+            {
+                i32 r = (0.1 + 0.2).ToString() == "0.30000000000000004" && (1.0 / 3.0).ToString() == "0.3333333333333333" && (5.5).ToString() == "5.5" ? 1 : 0;
+                r += Float64.Parse((0.1 + 0.2).ToString()) == 0.1 + 0.2 && Float64.Parse((2.0 / 3.0).ToString()) == 2.0 / 3.0 && (1e20).ToString() == "1e+20" && (1.5e-7).ToString() == "1.5e-07" ? 10 : 0;
+                r += Float64.PositiveInfinity.ToString() == "inf" && Float64.NegativeInfinity.ToString() == "-inf" && Float64.NaN.ToString() == "nan" && (-0.0).ToString() == "-0" ? 100 : 0;
+                r += Float32.PositiveInfinity.ToString() == "inf" && Float16.NegativeInfinity.ToString() == "-inf" && Float128.NaN.ToString() == "nan" && Float256.PositiveInfinity.ToString("F2") == "inf" && (1.0 / 0.0).ToString("R") == "inf" ? 1000 : 0;
+                r += Float64.Parse("inf") == Float64.PositiveInfinity && Float64.Parse("-inf") == Float64.NegativeInfinity && Float64.IsNaN(Float64.Parse("nan")) && Float64.Parse("Infinity") == Float64.PositiveInfinity && Float64.Parse("-Infinity") == Float64.NegativeInfinity && Float64.IsNaN(Float64.Parse("NaN")) ? 10000 : 0;
+                r += (Float64.TryParse(" inf ") ?? 0.0) == Float64.PositiveInfinity && (f32)Float64.Parse("-inf") == Float32.NegativeInfinity && Float16.Parse("inf") == Float16.PositiveInfinity && Float128.Parse("-inf") == Float128.NegativeInfinity && Float256.IsNaN(Float256.Parse("nan")) && Float64.TryParse("infinite") == null ? 100000 : 0;
+                System.IO.StringWriter w = new System.IO.StringWriter();
+                w.Write(0.1 + 0.2);
+                r += w.ToString() == "0.30000000000000004" ? 1000000 : 0;
+                return r;
+            }
+
+            static JsonRejects(str text) : bool
+            {
+                try
+                {
+                    JsonValue.Parse(text);
+                }
+                catch (FormatError e)
+                {
+                    return true;
+                }
+                return false;
+            }
+
+            static Brackets(i32 count, u8 unit) : str
+            {
+                u8[] units = new u8[count];
+                loop (i32 i = 0..count)
+                    units[i] = unit;
+                return new String<u8>(units);
+            }
+
+            public JsonStrict() : i32
+            {
+                i32 r = 0;
+                bool failed = false;
+                try
+                {
+                    JsonValue.Of(Float64.PositiveInfinity).ToString();
+                }
+                catch (FormatError e)
+                {
+                    failed = true;
+                }
+                bool nanFailed = false;
+                try
+                {
+                    JsonValue.NewArray().Add(JsonValue.Of(Float64.NaN)).ToString();
+                }
+                catch (FormatError e)
+                {
+                    nanFailed = true;
+                }
+                r += failed && nanFailed ? 1 : 0;
+                r += JsonValue.Of(0.1 + 0.2).ToString() == "0.30000000000000004" && JsonValue.Parse("0.30000000000000004").AsNumber == 0.1 + 0.2 && JsonValue.Of(1e300).ToString() == "1e+300" ? 10 : 0;
+                r += JsonRejects("01") && JsonRejects("1.") && JsonRejects("1e") && JsonRejects("-") && JsonRejects(".5") && JsonRejects("[01]") && JsonRejects("+1") ? 100 : 0;
+                r += JsonValue.Parse("-0").AsNumber == 0 && JsonValue.Parse("10.5e-3").AsNumber == 0.0105 && JsonValue.Parse("[0,1.5,-3E2]").ToString() == "[0,1.5,-300]" ? 1000 : 0;
+                r += JsonRejects(Brackets(100000, (u8)'[')) && JsonRejects(Brackets(513, (u8)'[') + Brackets(513, (u8)']')) && JsonValue.Parse(Brackets(512, (u8)'[') + Brackets(512, (u8)']')).Count == 1 ? 10000 : 0;
+                str lone = JsonValue.Parse("\"a\\ud800b\"").AsString;
+                str low = JsonValue.Parse("\"a\\udc00b\"").AsString;
+                str pairAfter = JsonValue.Parse("\"\\ud800\\ud83d\\ude00\"").AsString;
+                str escapeAfter = JsonValue.Parse("\"\\ud800\\u0041\"").AsString;
+                r += lone == "a�b" && low == "a�b" && pairAfter == "�😀" && escapeAfter == "�A" && JsonValue.Parse("\"\\ud83d\\ude00\"").AsString == "😀" ? 100000 : 0;
+                return r;
+            }
+
+            static RegexRejects(str pattern) : bool
+            {
+                try
+                {
+                    new Regex(pattern);
+                }
+                catch (ArgumentError e)
+                {
+                    return true;
+                }
+                return false;
+            }
+
+            public RegexEscapes() : i32
+            {
+                i32 r = RegexRejects("a\\1") && RegexRejects("\\x41") && RegexRejects("\\u0041") && RegexRejects("[\\x41]") && RegexRejects("\\p") ? 1 : 0;
+                r += !RegexRejects("\\.\\(\\)\\\\\\-\\/\\n\\t") && new Regex("\\.\\(\\)\\\\\\-\\/").IsMatch("x.()\\-/y") && new Regex("[\\n\\t\\]]+").Match("\n\t]x").Length == 3 ? 10 : 0;
+                Match cat = new Regex("\\bcat\\b").Match("concat cat catalog");
+                r += cat.Success && cat.Index == 7 && cat.Length == 3 && !new Regex("\\bcat\\b").IsMatch("concatenate") ? 100 : 0;
+                r += new Regex("\\Bcat\\B").Match("cat concatenate").Index == 7 && new Regex("\\bword\\b").Match("a word.").Index == 2 && !new Regex("^\\b").IsMatch("") ? 1000 : 0;
+                r += new Regex("\\b").Matches("ab cd").Count == 4 && new Regex("\\b\\w").Replace("one two", "X") == "Xne Xwo" && new Regex("\\b\\w+\\b").Match("  hi  ").Value == "hi" ? 10000 : 0;
+                return r;
+            }
+
+            static OrderedFloats(f64[] a) : bool
+            {
+                loop (i32 i = 1..a.Length)
+                {
+                    if (a[i - 1].CompareTo(a[i]) > 0)
+                        return false;
+                }
+                return true;
+            }
+
+            public FloatOrder() : i32
+            {
+                f64 nan = Float64.NaN;
+                f64[] a = [3.0, nan, 1.0, -0.0, nan, 2.0, 0.0, Float64.NegativeInfinity, -1.0, Float64.PositiveInfinity, 1.5, nan, 0.5];
+                Array.Sort(a);
+                i32 r = OrderedFloats(a) && a[0] == Float64.NegativeInfinity && a[1] == -1.0 && a[4] == 0.5 && a[9] == Float64.PositiveInfinity && Float64.IsNaN(a[10]) && Float64.IsNaN(a[12]) ? 1 : 0;
+                r += nan.CompareTo(nan) == 0 && nan.CompareTo(1.0) == 1 && (1.0).CompareTo(nan) == -1 && (-0.0).CompareTo(0.0) == 0 && Float64.PositiveInfinity.CompareTo(nan) == -1 && (1.0).CompareTo(2.0) == -1 ? 10 : 0;
+                f32[] b = [(f32)2.0, Float32.NaN, (f32)1.0, Float32.NaN, (f32)-1.0];
+                Array.Sort(b);
+                r += b[0] == (f32)-1.0 && b[1] == (f32)1.0 && b[2] == (f32)2.0 && b[3] != b[3] && b[4] != b[4] ? 100 : 0;
+                f16[] c = [2f16, Float16.NaN, 1f16];
+                Array.Sort(c);
+                List<f64> l = new List<f64>();
+                l.Add(nan); l.Add(2.0); l.Add(nan); l.Add(1.0);
+                Lists.Sort(l);
+                r += c[0] == 1f16 && c[1] == 2f16 && Float16.IsNaN(c[2]) && l[0] == 1.0 && l[1] == 2.0 && Float64.IsNaN(l[2]) && Float64.IsNaN(l[3]) ? 1000 : 0;
+                r += Float128.NaN.CompareTo(1f128) == 1 && (1f128).CompareTo(Float128.NaN) == -1 && Float128.NaN.CompareTo(Float128.NaN) == 0 && Float256.NaN.CompareTo(1f256) == 1 && (1f256).CompareTo(Float256.NaN) == -1 && Float256.NaN.CompareTo(Float256.NaN) == 0 ? 10000 : 0;
+                return r;
+            }
+
+            static LogRejects(i32 x, i32 which) : bool
+            {
+                try
+                {
+                    if (which == 0)
+                        Math.Log10(x);
+                    else if (which == 1)
+                        Math.Log2(x);
+                    else
+                        Math.Log(x, 10);
+                }
+                catch (ArgumentError e)
+                {
+                    return true;
+                }
+                return false;
+            }
+
+            static UrlRejects(str url) : bool
+            {
+                try
+                {
+                    System.Net.HttpClient.Get(url);
+                }
+                catch (ArgumentError e)
+                {
+                    return true;
+                }
+                return false;
+            }
+
+            public LogIntegers() : i32
+            {
+                i32 r = LogRejects(0, 0) && LogRejects(-5, 0) && LogRejects(0, 1) && LogRejects(-1, 2) && !LogRejects(1, 0) && !LogRejects(1000, 2) ? 1 : 0;
+                r += Math.Log10(1000) == 3 && Math.Log2(1) == 0 && Math.Log(81, 3) == 4 && Math.Log10(0.0) == Float64.NegativeInfinity && Float64.IsNaN(Math.Log10(-1.0)) ? 10 : 0;
+                bool baseRejected = false;
+                try
+                {
+                    Math.Log(8, 1);
+                }
+                catch (ArgumentError e)
+                {
+                    baseRejected = true;
+                }
+                r += baseRejected ? 100 : 0;
+                return r;
+            }
+
+            public HttpUrls() : i32 => (UrlRejects("https://example.com/") ? 1 : 0) + (UrlRejects("http://:/") ? 10 : 0) + (UrlRejects("http://host:abc/") ? 100 : 0) + (UrlRejects("http:///path") ? 1000 : 0);
+
+            class Vacant
+            {
+                public:
+                    i32 Id;
+                    new(i32 id) { Id = id; }
+            }
+
+            static NullsPast(List<Vacant?> list) : i32
+            {
+                Vacant?[] items = list.Items();
+                i32 nulls = 0;
+                loop (i32 i = list.Count..items.Length)
+                {
+                    if (items[i] == null)
+                        nulls++;
+                }
+                return nulls;
+            }
+
+            public ListVacated() : i32
+            {
+                List<Vacant?> list = new List<Vacant?>();
+                loop (i32 i = 0..4)
+                    list.Add(new Vacant(i));
+                i32 room = list.Items().Length;
+                list.RemoveAt(0);
+                i32 r = list.Count == 3 && NullsPast(list) == room - 3 && (list[0]?.Id ?? -1) == 1 ? 1 : 0;
+                list.Pop();
+                r += list.Count == 2 && NullsPast(list) == room - 2 ? 10 : 0;
+                list.RemoveAll(v => v is Vacant x && x.Id == 1);
+                r += list.Count == 1 && NullsPast(list) == room - 1 && (list[0]?.Id ?? -1) == 2 ? 100 : 0;
+                list.Clear();
+                r += list.Count == 0 && NullsPast(list) == room ? 1000 : 0;
+                Stack<Vacant?> stack = new Stack<Vacant?>();
+                stack.Push(new Vacant(7));
+                Queue<Vacant?> queue = new Queue<Vacant?>();
+                queue.Enqueue(new Vacant(8));
+                queue.Enqueue(new Vacant(9));
+                r += (stack.Pop()?.Id ?? -1) == 7 && (queue.Dequeue()?.Id ?? -1) == 8 && queue.Count == 1 && (queue.Peek()?.Id ?? -1) == 9 ? 10000 : 0;
+                return r;
+            }
+
             public Main() : i32 => Concat();
         }
 
@@ -3404,6 +3619,13 @@ public sealed unsafe class CoreLibraryTests : CheckedTest
         ("SortBy", 3251111, "List.Sort and Array.Sort with a comparison, Array.ForEach, FindIndex"),
         ("Nullables", 207511123, "nullable values: TryParse, `??`, `== null`, HasValue, Value, `is T v`"),
         ("ParseLimits", 131071, "integer Parse/TryParse at the limits: MinValue and MaxValue of i32, i64, i128, u128, i256, u256 parse, one past them is null, Int32.Parse throws a FormatError"),
+        ("FloatText", 1111111, "Float64.ToString is the shortest text that reads back (0.1 + 0.2, 1/3, 1e+20, 1.5e-07, -0), through StringWriter too; `inf`, `-inf` and `nan` are written by every float and every format, and Parse/TryParse of f16/f32 (through Float64)/f64/f128/f256 read them and `Infinity`/`NaN`"),
+        ("JsonStrict", 111111, "JsonValue: writing inf or nan is a FormatError; numbers keep every digit; `01`, `1.`, `1e`, `-`, `.5`, `+1` are rejected by the JSON grammar; nesting past 512 is a FormatError (100,000 `[` does not overflow the stack), 512 is read; a lone `\\u` surrogate becomes U+FFFD and consumes only its own escape"),
+        ("RegexEscapes", 11111, "Regex: `\\1`, `\\x41`, `\\u0041`, `\\p` (in a class too) are ArgumentErrors; escaped punctuation and `\\n \\t` stay; `\\b` and `\\B` are word boundaries (Match, IsMatch, Matches, Replace)"),
+        ("FloatOrder", 11111, "CompareTo of f16/f32/f64/f128/f256 is a total order (nan above everything, equal to itself; -0 == +0), so Array.Sort and Lists.Sort order arrays with nans"),
+        ("LogIntegers", 111, "Math.Log10/Log2/Log(x, base) of an integer below 1 (or in an integer base below 2) is an ArgumentError; of floats, -inf and nan as before"),
+        ("HttpUrls", 1111, "HttpClient.Get: `https://` is an ArgumentError (no TLS); an empty or non-numeric port and a missing host are ArgumentErrors, not `not a number`"),
+        ("ListVacated", 11111, "List.RemoveAt/Pop/RemoveAll/Clear (Stack.Pop, Queue.Dequeue) leave no reference in the slots they vacate (Items() past Count is null)"),
         ("Statics", 151711, "static constructors (in dependency order), nested types (of a generic type too), `++` on a static field"),
         ("Conditional", 1608534, "`?.` on fields, calls and strings, chained, with `??`"),
         ("Captures", 128912, "lambdas in loops: each pass's variables, a variable shared outside the loop"),
