@@ -3405,6 +3405,131 @@ public sealed unsafe class CoreLibraryTests : CheckedTest
                 return r;
             }
 
+            public SyncDisposes() : i32
+            {
+                // Every type that wraps a native lock or condition releases it: Dispose, and the object may not be used after.
+                i32 r = 0;
+                Mutex m = new Mutex();
+                m.Lock();
+                m.Unlock();
+                m.Dispose();
+                Condition c = new Condition();
+                c.Signal();
+                c.Dispose();
+                Lock l = new Lock();
+                l.Enter();
+                l.Exit();
+                l.Dispose();
+                ManualResetEvent manual = new ManualResetEvent(true);
+                r += manual.WaitOne(0) ? 1 : 0;
+                manual.Dispose();
+                AutoResetEvent auto = new AutoResetEvent(true);
+                r += auto.WaitOne(0) && !auto.WaitOne(0) ? 10 : 0;
+                auto.Dispose();
+                SemaphoreSlim gate = new SemaphoreSlim(1);
+                gate.Wait();
+                gate.Release();
+                gate.Dispose();
+                CountdownEvent count = new CountdownEvent(1);
+                r += count.Signal() && count.Wait(0) ? 100 : 0;
+                count.Dispose();
+                ConcurrentQueue<i32> queue = new ConcurrentQueue<i32>();
+                queue.Enqueue(5);
+                r += queue.TryDequeue(0) == 5 ? 1000 : 0;
+                queue.Dispose();
+                BlockingCollection<i32> items = new BlockingCollection<i32>();
+                items.Add(7);
+                items.CompleteAdding();
+                r += items.Take() == 7 && items.IsCompleted ? 10000 : 0;
+                items.Dispose();
+                // Parallel.For frees the event of each call (the last of its users does: the caller, or a helper that
+                // the pool schedules after the caller has left); 100 calls in a row stay correct.
+                AtomicI64 total = new AtomicI64();
+                loop (i32 round = 0..100)
+                    Parallel.For(0, 64, i => { total.Add(i); });
+                r += total.Load() == 100 * 2016 ? 100000 : 0;
+                // Disposed twice is harmless.
+                m.Dispose();
+                c.Dispose();
+                return r + 1000000;
+            }
+
+            public async AwaitsPoolWork() : Task<i32>
+            {
+                i32 value = await Task.Run<i32>(() => { Thread.Sleep(5); return 21; });
+                return value * 2;
+            }
+
+            public PoolWakesScheduler() : i32
+            {
+                // A 1 s Task.Delay is pending while pool work of 5 ms is waited for: the scheduler wakes when the work
+                // finishes (the timer only bounds its sleep), so the wait takes milliseconds, not the second.
+                Task late = Task.Delay(1000);
+                Stopwatch watch = Stopwatch.StartNew();
+                i32 doubled = AwaitsPoolWork().Result;
+                i64 awaited = watch.ElapsedMilliseconds;
+                watch.Restart();
+                Task.Run(() => { Thread.Sleep(5); }).Wait();
+                i64 waited = watch.ElapsedMilliseconds;
+                i32 r = doubled == 42 && awaited < 500 ? 1 : 0;
+                r += waited < 500 ? 10 : 0;
+                late.Wait();
+                return r + (late.IsCompleted && !late.IsFaulted ? 100 : 0);
+            }
+
+            public UnseekableStreams() : i32
+            {
+                // The console, a pipe and a socket cannot seek: CanSeek is false and Seek / Position throw IOError (a
+                // BufferedStream over them says the same and still reads).
+                i32 r = 0;
+                Stream input = Console.OpenStandardInput();
+                r += !input.CanSeek ? 1 : 0;
+                bool threw = false;
+                try { input.Seek(0, SeekOrigin.Begin); } catch (IOError e) { threw = true; }
+                r += threw ? 10 : 0;
+                threw = false;
+                try { input.Position = 1; } catch (IOError e) { threw = true; }
+                r += threw ? 100 : 0;
+                System.Net.TcpListener listener = new System.Net.TcpListener(0);
+                i32 port = listener.Port;
+                Thread server = new Thread(() =>
+                {
+                    System.Net.TcpClient c = listener.Accept();
+                    c.Write("hello");
+                    c.Close();
+                });
+                server.Start();
+                System.Net.TcpClient client = System.Net.TcpClient.Connect("127.0.0.1", port);
+                System.Net.NetworkStream net = client.Stream;
+                r += !net.CanSeek && net.CanRead && net.CanWrite ? 1000 : 0;
+                threw = false;
+                try { net.Seek(0, SeekOrigin.Current); } catch (IOError e) { threw = true; }
+                r += threw ? 10000 : 0;
+                BufferedStream buffered = new BufferedStream(net, 2);
+                r += !buffered.CanSeek ? 100000 : 0;
+                threw = false;
+                try { buffered.Seek(0, SeekOrigin.Begin); } catch (IOError e) { threw = true; }
+                r += threw ? 1000000 : 0;
+                u8[] bytes = new u8[16];
+                i32 total = 0;
+                loop (true)
+                {
+                    i32 n = buffered.Read(bytes, total, 16 - total);
+                    if (n <= 0)
+                        break;
+                    total += n;
+                }
+                server.Join();
+                client.Close();
+                listener.Close();
+                u8[] got = new u8[total];
+                Array.Copy(bytes, 0, got, 0, total);
+                r += new String<u8>(got) == "hello" ? 10000000 : 0;
+                MemoryStream memory = new MemoryStream();
+                memory.WriteByte(1);
+                return r + (memory.CanSeek && new BufferedStream(memory).CanSeek ? 100000000 : 0);
+            }
+
             public Main() : i32 => Concat();
         }
 
@@ -3642,6 +3767,9 @@ public sealed unsafe class CoreLibraryTests : CheckedTest
         ("TaskRuns", 11111, "Task.Run with and without a result, await of a pool task, WhenAll, a task waiting for another on the pool, a failed one"),
         ("NestedParallels", 111, "Parallel.For nested three levels wider than the pool, from inside pool work, and an error thrown back through two levels (the caller runs the chunks a busy pool cannot: no starvation)"),
         ("DelayWhileYielding", 11, "Task.Delay finishes while another task keeps yielding (`await Task.Yield()` in a loop); two delays due in order"),
+        ("SyncDisposes", 1111111, "Mutex, Condition, Lock, the events, SemaphoreSlim, CountdownEvent, ConcurrentQueue and BlockingCollection release their native handles with Dispose; 2000 Parallel.For calls free their event (the last user does) and stay correct"),
+        ("PoolWakesScheduler", 111, "a pool task awaited or waited for while a 1 s Task.Delay is pending finishes in milliseconds (the scheduler sleeps on Changed, bounded by the timer, not on the timer)"),
+        ("UnseekableStreams", 111111111, "the console, a socket and a BufferedStream over it report CanSeek false and throw IOError on Seek and Position (and still read); MemoryStream and a BufferedStream over it can seek"),
         ("Operators", 11111, "operators a value type declares (`op +`, unary `-` and `!`, `==`, `<`, `+=`; `!=` from `==`), and an enum's ToString"),
         ("Dates", 1111111, "DateTime: day of week, AddMonths/AddYears at month ends, differences, leap years, Unix time, parts, a date that does not exist"),
         ("TimeSpans", 1111111, "TimeSpan: From*, parts, + - unary - * /, ToString c/g/custom, Parse and TryParse"),
