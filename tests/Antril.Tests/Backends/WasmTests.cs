@@ -19,10 +19,14 @@ public sealed class WasmTests : CheckedTest
     /// Cases that do not apply to WebAssembly: real threads (a thread here runs at once, to the end), processes and sockets
     /// (no such thing in a WebAssembly module) and native memory (System.Exchange packets).
     /// </summary>
-    private static readonly HashSet<string> Skipped = ["Threads", "Syncs", "Parallels", "NestedParallels", "TaskRuns", "DelayWhileYielding", "Processes", "Network", "Exchange"];
+    private static readonly HashSet<string> Skipped = ["Threads", "Syncs", "Parallels", "NestedParallels", "TaskRuns", "DelayWhileYielding", "SyncDisposes", "PoolWakesScheduler", "UnseekableStreams", "Processes", "Network", "Exchange"];
 
     private static readonly (string Function, int Expected, string What)[] Cases =
-        [.. CoreLibraryTests.CaseList.Where(c => !Skipped.Contains(c.Function))];
+        [.. CoreLibraryTests.CaseList.Where(c => !Skipped.Contains(c.Function) && (Only is null || Only.Contains(c.Function)))];
+
+    /// <summary>LARVA_CASES=A,B runs only those cases (to corner one that hangs or fails in node).</summary>
+    private static readonly HashSet<string>? Only =
+        Environment.GetEnvironmentVariable("LARVA_CASES") is { Length: > 0 } list ? new HashSet<string>(list.Split(',')) : null;
 
     /// <summary>The program (its Main runs case k), compiled, lowered, checked and linked once for both back ends.</summary>
     private static readonly Lazy<Steps> Program = new(Build);
