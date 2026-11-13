@@ -820,6 +820,12 @@ public sealed unsafe class AntrilTests : CheckedTest
             ("F() { const i8 k = 50 * 3; }", "AN1092", "…in a local const"),
             ("public enum E : i8 { A = 100 + 100 }", "AN1019", "…in an enum member's value"),
             ("F() : i64 { i64 big = 2147483647 + 1; i32 ok = 1 << 7; i8 fits = 60 + 60; i8 wrapped = (i8)300; return big + ok + fits + wrapped; }", "", "constant arithmetic that fits (the literals take the type wanted), and a cast that wraps"),
+            ("import A; import B; into namespace A { public class T { } } into namespace B { public class T { } } F() { T t = new T(); }", "AN1107", "a type two imported namespaces both have"),
+            ("import A; import B; into namespace A { public class T { public: static N() : i32 => 1; } } into namespace B { public class T { } } F() : i32 => T.N();", "AN1107", "…reached through its static members"),
+            ("import A; import B; into namespace A { public class T { } } into namespace B { public class T { } } into namespace A { F() { T t = new T(); } }", "", "…but the current namespace's wins"),
+            ("import T from A; import B; into namespace A { public class T { } } into namespace B { public class T { } public class U { } } F() { T t = new T(); U u = new U(); }", "", "…and one imported by name wins"),
+            ("import Nope; F() { }", "AN1084", "an import of a namespace that does not exist"),
+            ("import A; into namespace A { public class T { } } F() { T t = new T(); }", "", "an import of a namespace that exists"),
         ];
         foreach (var (text, code, what) in wrong)
         {

@@ -174,12 +174,18 @@ namespace Antril.Binding
         private void CheckImports(CompilationUnit unit)
         {
             var seen = new Dictionary<string, string>(StringComparer.Ordinal);
+            // The core library (the compilation that declares System.String) still has an `import` of a namespace with
+            // nothing in it (Reflection.ant: System.Collections.Generic): not reported there until it is fixed.
+            bool coreLibrary = Types.GetValueOrDefault("System.String") is { IsExternal: false };
             foreach (var import in unit.Imports)
             {
                 string ns = import.Name.ToString();
-                if ((import.Alias is not null || import.Picked.Length > 0) && !Namespaces.Contains(ns))
+                if (!Namespaces.Contains(ns))
                 {
-                    Error("AN1084", $"there is no namespace `{ns}` to import from", unit.Source, import.Name.Span);
+                    if (import.Alias is not null || import.Picked.Length > 0)
+                        Error("AN1084", $"there is no namespace `{ns}` to import from", unit.Source, import.Name.Span);
+                    else if (!coreLibrary)
+                        Error("AN1084", $"there is no namespace `{ns}` to import: nothing is declared in it", unit.Source, import.Name.Span);
                     continue;
                 }
                 if (import.Alias is { } alias && !seen.TryAdd(alias, ns))
@@ -1071,9 +1077,10 @@ namespace Antril.Binding
 
         /// <summary>
         /// A type by name as seen from <paramref name="scope"/>: in the namespace and its parents (innermost first), then in
-        /// the namespaces the file imports.
+        /// the namespaces the file imports. A name two imported namespaces both have is ambiguous: reported in
+        /// <paramref name="bag"/> when one is given (and the name finds nothing), the first import's otherwise.
         /// </summary>
-        internal TypeSymbol? FindType(QualifiedName name, DeclarationScope scope, int? arity = null)
+        internal TypeSymbol? FindType(QualifiedName name, DeclarationScope scope, int? arity = null, DiagnosticBag? bag = null)
         {
             if (name.Parts is ["str"])
                 return StringSymbol;
@@ -1095,12 +1102,22 @@ namespace Antril.Binding
             }
             if (Imported(written, scope) is { } imported && Get(imported) is { } named)
                 return named;
+            TypeSymbol? first = null;
             foreach (var import in scope.Imports)
             {
-                if (Get($"{import}.{written}") is { } found)
-                    return found;
+                if (Get($"{import}.{written}") is not { } found || found == first)
+                    continue;
+                if (first is null)
+                {
+                    first = found;
+                    continue;
+                }
+                if (bag is null)
+                    break;
+                bag.Error("AN1107", $"`{written}` is both `{first.FullName}` and `{found.FullName}`, from two imports: write which one (or import it by name: `import {written} from {import};`)", scope.Source, name.Span);
+                return null;
             }
-            return null;
+            return first;
         }
 
         /// <summary>The HIR type a type syntax names (null after an error).</summary>
@@ -1138,9 +1155,10 @@ namespace Antril.Binding
                             return null;
                         }
                     }
-                    else if (FindType(named.Name, scope, named.Arguments.Length) is not { } found)
+                    else if (FindType(named.Name, scope, named.Arguments.Length, bag) is not { } found)
                     {
-                        bag.Error("AN1014", $"unknown type `{named.Name}`", scope.Source, named.Span);
+                        if (bag.Count == 0 || bag[^1].Code != "AN1107")
+                            bag.Error("AN1014", $"unknown type `{named.Name}`", scope.Source, named.Span);
                         return null;
                     }
                     else
@@ -3447,7 +3465,7 @@ namespace Antril.Binding
         }
 
         /// <summary>The type an expression names (<c>Color</c>, <c>App.Color</c>), if it names one.</summary>
-        internal TypeSymbol? TypeNamed(Expr expression, DeclarationScope scope)
+        internal TypeSymbol? TypeNamed(Expr expression, DeclarationScope scope, DiagnosticBag? bag = null)
         {
             var parts = new List<string>();
             var at = expression;
@@ -3460,7 +3478,7 @@ namespace Antril.Binding
                 return null;
             parts.Insert(0, name.Name);
             var arguments = expression is MemberExpr last ? last.TypeArguments : name.TypeArguments;
-            return FindType(new QualifiedName([.. parts], expression.Span), scope, arguments.Length);
+            return FindType(new QualifiedName([.. parts], expression.Span), scope, arguments.Length, bag);
         }
     }
 

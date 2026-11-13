@@ -1450,7 +1450,10 @@ namespace Antril.Binding
             // `i32.F()`: the primitive's provider (Int32), which holds its static members and extensions.
             if (root == target && Binder.PrimitiveNamed(name.Name) is { } primitive && binder.PrimitiveTypes.TryGetValue(primitive, out var provider))
                 return provider;
-            var type = binder.TypeNamed(target, scope);
+            int before = bag.Count;
+            var type = binder.TypeNamed(target, scope, bag);
+            if (type is null && bag.Count > before)
+                type = binder.TypeNamed(target, scope); // ambiguous (reported): binding goes on with the first import's
             if (type is not null)
                 binder.CheckTypeAccess(type, scope, target.Span, bag);
             if (type is not null && recorder is not null)
