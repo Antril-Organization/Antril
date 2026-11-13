@@ -506,23 +506,53 @@ namespace Antril.Syntax
             return new Token(TokenKind.Char, Span(start), text[start..position], value);
         }
 
+        /// <summary>
+        /// One character of a string or character literal, an escape read whole: `\n \t \r \0 \\ \" \'`, `\uXXXX` (a UTF-16
+        /// unit) and `\U000XXXXX` (a code point, as one or two units). Any other `\x` is an error (AN0008) and stands for
+        /// the character after the backslash.
+        /// </summary>
         private string Escaped()
         {
+            int start = position;
             char c = text[position++];
             if (c != '\\' || position >= text.Length)
                 return c.ToString();
             char e = text[position++];
-            return e switch
+            switch (e)
             {
-                'n' => "\n",
-                't' => "\t",
-                'r' => "\r",
-                '0' => "\0",
-                '\\' => "\\",
-                '"' => "\"",
-                '\'' => "'",
-                _ => e.ToString(),
-            };
+                case 'n': return "\n";
+                case 't': return "\t";
+                case 'r': return "\r";
+                case '0': return "\0";
+                case '\\': return "\\";
+                case '"': return "\"";
+                case '\'': return "'";
+                case 'u' or 'U':
+                {
+                    int digits = e == 'u' ? 4 : 8;
+                    int value = 0, read = 0;
+                    while (read < digits && position < text.Length && Uri.IsHexDigit(text[position]))
+                    {
+                        value = value * 16 + Convert.ToInt32(text[position].ToString(), 16);
+                        position++;
+                        read++;
+                    }
+                    if (read < digits)
+                    {
+                        diagnostics.Error("AN0008", e == 'u' ? "`\\u` takes four hex digits (`\\u0041`)" : "`\\U` takes eight hex digits (`\\U0001F600`)", source, new TextSpan(start, position - start));
+                        return "";
+                    }
+                    if (value > 0x10FFFF || value is >= 0xD800 and <= 0xDFFF && e == 'U')
+                    {
+                        diagnostics.Error("AN0008", $"`{text[start..position]}` is not a code point (up to U+10FFFF, not a surrogate)", source, new TextSpan(start, position - start));
+                        return "";
+                    }
+                    return value <= 0xFFFF ? ((char)value).ToString() : char.ConvertFromUtf32(value);
+                }
+                default:
+                    diagnostics.Error("AN0008", $"unknown escape `\\{e}`: the escapes are `\\n \\t \\r \\0 \\\\ \\\" \\' \\uXXXX \\U000XXXXX`", source, new TextSpan(start, 2));
+                    return e.ToString();
+            }
         }
     }
 }
