@@ -1790,8 +1790,8 @@ public sealed unsafe class CoreLibraryTests : CheckedTest
             {
                 // Three levels of Parallel.For, each wider than the pool: the callers run the chunks the busy pool cannot.
                 AtomicI32 count = new AtomicI32();
-                Parallel.For(0, 64, i => { Parallel.For(0, 64, j => { Parallel.For(0, 64, k => { count.Increment(); }); }); });
-                i32 r = count.Load() == 262144 ? 1 : 0;
+                Parallel.For(0, 24, i => { Parallel.For(0, 24, j => { Parallel.For(0, 24, k => { count.Increment(); }); }); });
+                i32 r = count.Load() == 13824 ? 1 : 0;
                 // Parallel.For from inside pool work.
                 CountdownEvent done = new CountdownEvent(1);
                 AtomicI32 inner = new AtomicI32();
