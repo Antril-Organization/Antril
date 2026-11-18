@@ -43,6 +43,8 @@ namespace Antril.Syntax
         Reactive = 1 << 15, Computed = 1 << 16, Reacts = 1 << 17,
         /// <summary><c>const</c>: a value known when compiling (a field of a namespace or a type, or a local).</summary>
         Const = 1 << 18,
+        /// <summary><c>derive</c>: an interface's member written once, generated into every type that implements the interface.</summary>
+        Derive = 1 << 19,
         Access = Public | Friendly | Internal | Inherited | File | Private,
     }
 
@@ -202,7 +204,14 @@ namespace Antril.Syntax
     /// <c>static loop (E in T) body</c> in a variadic template: the body once per type of the pack, with <c>E</c> that type
     /// and the pack's fields and parameters naming that type's (<c>item</c> is <c>item0</c>, then <c>item1</c>…).
     /// </summary>
-    public sealed record StaticLoopStmt(string Name, string Pack, Stmt Body, TextSpan Span) : Stmt(Span);
+    public sealed record StaticLoopStmt(string Name, string Pack, Stmt Body, TextSpan Span) : Stmt(Span)
+    {
+        /// <summary>
+        /// <c>static loop (field F f in TSelf)</c> in a <c>derive</c> member: the body once per field of the implementing
+        /// type, with <c>F</c> (<see cref="Name"/>) the field's type and <c>f</c> (this) the field. Null for a pack's loop.
+        /// </summary>
+        public string? Field { get; init; }
+    }
 
     public sealed record LocalDeclStmt(TypeSyntax Type, string Name, TextSpan NameSpan, Expr? Initializer, TextSpan Span) : Stmt(Span)
     {
@@ -215,7 +224,11 @@ namespace Antril.Syntax
 
     public sealed record ExprStmt(Expr Expression, TextSpan Span) : Stmt(Span);
 
-    public sealed record IfStmt(Expr Condition, Stmt Then, Stmt? Else, TextSpan Span) : Stmt(Span);
+    public sealed record IfStmt(Expr Condition, Stmt Then, Stmt? Else, TextSpan Span) : Stmt(Span)
+    {
+        /// <summary><c>static if (…)</c>: decided when a <c>derive</c> member is generated (its condition is known then); only the branch taken is kept.</summary>
+        public bool Static { get; init; }
+    }
 
     /// <summary><c>loop (condition) body</c>.</summary>
     public sealed record WhileLoop(Expr Condition, Stmt Body, TextSpan Span) : Stmt(Span);

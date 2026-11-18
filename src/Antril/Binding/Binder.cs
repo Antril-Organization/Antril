@@ -384,8 +384,27 @@ namespace Antril.Binding
                     CollectType(nested, scope, symbol);
                     continue;
                 }
-                pending.Add((symbol, member, scope));
+                // A member made from an interface's `derive` function names things as the interface's file does (and as the type's).
+                pending.Add((symbol, member, Derive.OriginOf(member) is { } origin ? DerivedScope(origin, scope) : scope));
             }
+        }
+
+        /// <summary>
+        /// The scope of a member generated from an interface's <c>derive</c> function: the type's (its namespace, its type
+        /// parameters, the type itself), with the imports of the interface's file and its namespace too; positions are the
+        /// interface file's.
+        /// </summary>
+        private static DeclarationScope DerivedScope(Derive.Origin origin, DeclarationScope scope)
+        {
+            var from = ImportScope(origin.Unit);
+            var aliases = new Dictionary<string, string>(from.NamespaceAliases);
+            foreach (var (alias, ns) in scope.NamespaceAliases)
+                aliases[alias] = ns;
+            var picked = new Dictionary<string, (string Namespace, string Name)>(from.Picked);
+            foreach (var (name, target) in scope.Picked)
+                picked[name] = target;
+            string[] imports = [.. scope.Imports.Concat(from.Imports).Concat(origin.Namespace.Length > 0 ? [origin.Namespace] : []).Distinct(StringComparer.Ordinal)];
+            return scope with { Source = origin.Unit.Source, Imports = imports, NamespaceAliases = aliases, Picked = picked };
         }
 
         /// <summary>The access a declaration says, else the project's default (BUILD <c>access.default</c>), else the language's.</summary>
@@ -1317,6 +1336,8 @@ namespace Antril.Binding
         private void DeclareMember(TypeSymbol owner, Node declaration, DeclarationScope scope)
         {
             var source = scope.Source;
+            if (declaration is MemberDecl { Modifiers: var written } && (written & Modifiers.Derive) != 0)
+                Error("AN1425", "`derive` goes on an interface's function: every type that implements the interface gets it", source, declaration.Span);
             switch (declaration)
             {
                 case TypeDecl { Kind: Syntax.TypeKind.Enum or Syntax.TypeKind.BitflagEnum } enumeration:
@@ -3346,8 +3367,9 @@ namespace Antril.Binding
                     return kind is H.ConstraintKinds.Copy;
                 case H.ArrayType:
                     return kind is H.ConstraintKinds.Managed;
+                // `class` (managed) asks for a handle that is there: a nullable is not one (`T?` of it is).
                 case H.NullableType n:
-                    return kind is not H.ConstraintKinds.New && Meets(n.Inner, kind, own, visiting);
+                    return kind is not (H.ConstraintKinds.New or H.ConstraintKinds.Managed) && Meets(n.Inner, kind, own, visiting);
                 case H.GenericParamType p:
                 {
                     if (own(p) is not { } ownParam)
@@ -3531,7 +3553,9 @@ namespace Antril.Binding
             if (diagnostics.HasErrors)
                 return new AntrilResult { Assembly = null, Diagnostics = diagnostics, Units = units, Timings = timings };
             // Variadic templates: one ordinary generic declaration per pack size the program uses.
-            var expanded = Variadic.Expand(units, diagnostics, references, table);
+            // `derive` functions: a copy in every type that implements their interface. Then variadic templates: one
+            // ordinary generic declaration per pack size the program uses.
+            var expanded = Variadic.Expand(Derive.Expand(units, diagnostics, references, table), diagnostics, references, table);
             if (diagnostics.HasErrors)
                 return new AntrilResult { Assembly = null, Diagnostics = diagnostics, Units = units, Timings = timings };
             var binder = new Binder(assemblyName, expanded, diagnostics, parallel, references) { Operators = table, Options = options ?? AntrilOptions.Default };
@@ -3540,6 +3564,7 @@ namespace Antril.Binding
             if (externalAssemblies is not null)
                 binder.ExternalAssemblies.UnionWith(externalAssemblies);
             binder.Assembly.LanguageData.AddRange(Variadic.Recorded(units)); // programs that use the library expand them
+            binder.Assembly.LanguageData.AddRange(Derive.Recorded(units)); // and make their types' copies of `derive` functions
             var assembly = binder.Bind(timings);
             return new AntrilResult { Assembly = diagnostics.HasErrors ? null : assembly, Diagnostics = diagnostics, Units = units, Timings = timings };
         }
