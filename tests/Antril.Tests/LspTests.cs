@@ -123,7 +123,10 @@ public sealed class LspTests(QueenProject project) : CheckedTest, IClassFixture<
         }
         finally
         {
+            // The project is the class's: what this case wrote goes, or the cases after it build it too (`&mut` with the
+            // checker off: AN1092).
             File.WriteAllText(queenPath, queen);
+            File.Delete(borrowPath);
         }
         server.Notify("textDocument/didSave", new JsonObject { ["textDocument"] = new JsonObject { ["uri"] = Uri(queenPath) } });
 
