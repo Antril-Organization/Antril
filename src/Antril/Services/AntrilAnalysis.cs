@@ -50,7 +50,7 @@ namespace Antril.Services
                 diagnostics.AddRange(bag);
             var timings = new Dictionary<string, long> { ["parse"] = watch.ElapsedMilliseconds };
             var recorder = new BindingRecorder();
-            var expanded = Variadic.Expand(units, diagnostics, References, table);
+            var expanded = Variadic.Expand(Derive.Expand(units, diagnostics, References, table), diagnostics, References, table);
             timings["variadic"] = watch.ElapsedMilliseconds;
             var binder = new Binder(assemblyName, expanded, diagnostics, parallel: true, References) { Recorder = recorder, Operators = table, Options = Options, BodiesOf = EveryBody ? null : document };
             binder.ExternalAssemblies.UnionWith(ExternalAssemblies);

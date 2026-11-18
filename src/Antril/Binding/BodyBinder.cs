@@ -444,6 +444,12 @@ namespace Antril.Binding
             {
                 case BlockStmt block:
                     return Block(block);
+                case StaticLoopStmt { Field: not null } fieldLoop:
+                    Error("AN1423", "`static loop (field …)` goes over the fields of a type: it goes in an interface's `derive` function", fieldLoop.Span);
+                    return new H.BlockStmt([]);
+                case IfStmt { Static: true } decided:
+                    Error("AN1424", "`static if` is decided when a `derive` function is made for a type: it goes in one", decided.Span);
+                    return new H.BlockStmt([]);
                 case StaticLoopStmt loop:
                     Error("AN1420", $"`static loop` repeats code per type of a pack: it goes in a variadic template (`<{loop.Pack}...>`)", loop.Span);
                     return new H.BlockStmt([]);
