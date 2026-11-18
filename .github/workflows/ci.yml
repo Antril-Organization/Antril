@@ -42,6 +42,9 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "10.0.x"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
       - name: Tests, with Nest's end to end (Nest is next to it)
         # In the repository's folder: its global.json picks the test platform.
         working-directory: Antril
