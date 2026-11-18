@@ -1213,7 +1213,13 @@ namespace Antril.Syntax
                 {
                     int start = position;
                     var attributes = ParseAttributes();
+                    // `const func<T> : bool test`: a quoted function (System.Quoted<…>: the function, its tree and captures).
+                    bool quoted = AtWord("const") && Peek(1).Kind == TokenKind.Identifier && Peek(1).Text == "func";
+                    if (quoted)
+                        Next();
                     var type = ParseType();
+                    if (quoted)
+                        type = new NamedTypeSyntax(new QualifiedName(["System", "Quoted"], type.Span), [type], type.Span);
                     string name = ExpectIdentifier("a parameter name");
                     parameters.Add(new ParameterSyntax(type, name, From(start)) { Attributes = attributes });
                 }
