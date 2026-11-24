@@ -409,6 +409,8 @@ namespace Antril.Services
                     text.Append(Type(value, catalog, names, imports)).Append(' ').Append(MarkMember(member.Name, member, SemanticKind.Field, declaration: true));
                     if (member.Field?.Value is { } constant)
                         text.Append(" = ").Append(Constant(constant, member.Type, names, imports));
+                    else if (FieldStart(member, imports ?? new HashSet<string>()) is { } start)
+                        text.Append(" = ").Append(start);
                     break;
             }
             return text.ToString();
@@ -814,6 +816,27 @@ namespace Antril.Services
                 });
             }
             return text.Append('"').ToString();
+        }
+
+        /// <summary>
+        /// A field's initializer as written (<c>str name = "a";</c>): what the type's generated constructor (the implicit
+        /// one, or the static one for a static field), which the view does not show, sets it to. Null when none does.
+        /// </summary>
+        private string? FieldStart(CatalogMember member, ISet<string> imports)
+        {
+            if (member.Field is not { } field)
+                return null;
+            var kind = (field.Flags & H.FieldFlags.Static) != 0 ? H.MethodKind.StaticConstructor : H.MethodKind.Constructor;
+            var made = member.Type.Definition.Methods.FirstOrDefault(m => m.Kind == kind && (m.Flags & H.MethodFlags.Generated) != 0 && m.Body is not null);
+            if (made?.Body is not { } body)
+                return null;
+            foreach (var statement in body.Block.Statements)
+            {
+                if (statement is H.ExprStmt { Expression: H.AssignExpr { Target: H.FieldExpr { Field: var f }, Value: var value } }
+                    && f.IsDefinition && f.Type == member.Type.Index && f.Member == member.Index)
+                    return new BodyPrinter(this, member.Type, member, body, imports, made).Expression(value);
+            }
+            return null;
         }
 
         /// <summary>

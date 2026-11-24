@@ -242,39 +242,63 @@ namespace Antril.Services
 
         private static bool IsWord(char c) => char.IsLetterOrDigit(c) || c == '_';
 
-        /// <summary>Whether a position is in a comment or inside a string or character literal.</summary>
+        /// <summary>The document's tokens (read once): what is code, what is text, and the comments between them.</summary>
+        private List<Token> Words => words ??= Lexer.Tokenize(source, []);
+        private List<Token>? words;
+
+        /// <summary>
+        /// Whether a position is in a comment or inside a string or character literal (the text of an interpolated string;
+        /// its holes are code), by the document's tokens: a <c>"/*"</c> in a string opens no comment.
+        /// </summary>
         private bool InCommentOrText(int offset)
         {
-            string text = source.Text;
-            int lineStart = offset;
-            while (lineStart > 0 && text[lineStart - 1] != '\n')
-                lineStart--;
-            bool inString = false, inChar = false;
-            for (int i = lineStart; i < offset; i++)
+            var tokens = Words;
+            // The last token that starts before the position.
+            int low = 0, high = tokens.Count - 1, at = -1;
+            while (low <= high)
             {
-                char c = text[i];
-                if (inString || inChar)
+                int middle = (low + high) / 2;
+                if (tokens[middle].Span.Start < offset)
                 {
-                    if (c == '\\')
-                        i++;
-                    else if (inString && c == '"')
-                        inString = false;
-                    else if (inChar && c == '\'')
-                        inChar = false;
-                    continue;
+                    at = middle;
+                    low = middle + 1;
                 }
-                if (c == '/' && i + 1 < text.Length && text[i + 1] == '/')
-                    return true;
-                if (c == '"')
-                    inString = true;
-                else if (c == '\'')
-                    inChar = true;
+                else
+                    high = middle - 1;
             }
-            if (inString || inChar)
-                return true;
-            // A block comment open before the position.
-            int open = text.LastIndexOf("/*", Math.Max(0, offset - 1), StringComparison.Ordinal);
-            return open >= 0 && text.IndexOf("*/", open, StringComparison.Ordinal) is var close && (close < 0 || close >= offset);
+            string text = source.Text;
+            if (at >= 0 && tokens[at] is var token && token.Kind is TokenKind.String or TokenKind.Char or TokenKind.HoleFormat)
+            {
+                // Inside it, or at the end of one left open (`"abc` as it is typed).
+                var span = token.Span;
+                char close = token.Kind == TokenKind.Char ? '\'' : '"';
+                bool closed = token.Kind == TokenKind.String && at + 1 < tokens.Count && tokens[at + 1] is { Kind: TokenKind.HoleStart } or { Kind: TokenKind.InterpolationEnd, Span.Length: > 0 }
+                    || span.Length >= 2 && text[span.End - 1] == close && text[span.Start] is '"' or '\'' or '@' or '$';
+                if (offset < span.End || offset == span.End && !closed && token.Kind != TokenKind.HoleFormat)
+                    return true;
+            }
+            // Between tokens only spaces and comments: one open at the position.
+            int i = at >= 0 ? Math.Min(tokens[at].Span.End, offset) : 0;
+            while (i < offset - 1)
+            {
+                if (text[i] == '/' && text[i + 1] == '/')
+                {
+                    int end = text.IndexOf('\n', i);
+                    if (end < 0 || end >= offset)
+                        return true;
+                    i = end + 1;
+                }
+                else if (text[i] == '/' && text[i + 1] == '*')
+                {
+                    int end = text.IndexOf("*/", i + 2, StringComparison.Ordinal);
+                    if (end < 0 || end + 2 > offset)
+                        return true;
+                    i = end + 2;
+                }
+                else
+                    i++;
+            }
+            return false;
         }
 
         // ── Completion ─────────────────────────────────────
@@ -346,6 +370,20 @@ namespace Antril.Services
         private CompletionContext? Receiver(int dot, int offset, out IReadOnlyList<CompletionItem> extra)
         {
             extra = [];
+            // Where the receiver ends: spaces and lines may come before the dot (a chain written one call a line), and `?.`
+            // reads the members of what is not null.
+            string text = source.Text;
+            bool conditional = false;
+            while (dot > 0 && char.IsWhiteSpace(text[dot - 1]))
+                dot--;
+            if (dot > 0 && text[dot - 1] == '?')
+            {
+                conditional = true;
+                dot--;
+                while (dot > 0 && char.IsWhiteSpace(text[dot - 1]))
+                    dot--;
+            }
+            H.HirType Held(H.HirType type) => conditional && type is H.NullableType { Inner: var inner } ? inner : type;
             RecordedSpan? best = null;
             foreach (var span in spans)
             {
@@ -357,10 +395,10 @@ namespace Antril.Services
             if (best is { Kind: RecordedKind.Type, Type: { } typeName })
                 return new CompletionContext.Members(Global(typeName), Static: true);
             if (best is { Type: { } valueType })
-                return ValueMembers(Global(valueType), out extra);
+                return ValueMembers(Global(Held(valueType)), out extra);
             // `(a + b).`, `(x as T).`: the value in the brackets (a bracket records no span of its own).
-            if (Bracketed(dot) is { } inner)
-                return ValueMembers(Global(inner), out extra);
+            if (Bracketed(dot) is { } bracketed)
+                return ValueMembers(Global(Held(bracketed)), out extra);
             // Not bound (the code around does not parse yet): read the name chain before the dot.
             var chain = new List<string>();
             int end = dot;
@@ -558,6 +596,9 @@ namespace Antril.Services
                         Type = span.Type is { } t ? Global(t) : null,
                         Declared = Spot(span.Declared),
                     };
+                // A type parameter (`T`): no type of the program (its span has no type token).
+                case RecordedKind.Type when span.Type is H.GenericParamType:
+                    return new SymbolInfo(SymbolKind.TypeParameter, source.Text.Substring(span.Span.Start, span.Span.Length)) { Type = Global(span.Type) };
                 case RecordedKind.Type when Catalog.Resolve(span.Token, program) is { } type:
                     return new SymbolInfo(SymbolKind.Type, type.Name) { CatalogType = type };
                 case RecordedKind.Member when Catalog.Resolve(span.Member, span.MemberKind, program) is { } member:
@@ -616,26 +657,31 @@ namespace Antril.Services
         {
             string text = source.Text;
             offset = Math.Clamp(offset, 0, text.Length);
-            // The '(' of the call the position is in, and which argument (commas at that depth before it).
+            // The '(' of the call the position is in, and which argument (commas at that depth before it), by the tokens:
+            // the brackets and commas of strings and comments do not count.
             int depth = 0, commas = 0, open = -1;
-            for (int i = offset - 1; i >= 0; i--)
+            var tokens = Words;
+            int last = tokens.Count - 1;
+            while (last >= 0 && tokens[last].Span.Start >= offset)
+                last--;
+            for (int t = last; t >= 0; t--)
             {
-                char c = text[i];
-                if (c is ')' or ']' or '}')
+                var kind = tokens[t].Kind;
+                if (kind is TokenKind.CloseParen or TokenKind.CloseBracket or TokenKind.CloseBrace or TokenKind.HoleEnd)
                     depth++;
-                else if (c is '(' or '[' or '{')
+                else if (kind is TokenKind.OpenParen or TokenKind.OpenBracket or TokenKind.OpenBrace or TokenKind.HoleStart)
                 {
                     if (depth == 0)
                     {
-                        if (c == '(')
-                            open = i;
+                        if (kind == TokenKind.OpenParen)
+                            open = tokens[t].Span.Start;
                         break;
                     }
                     depth--;
                 }
-                else if (c == ',' && depth == 0)
+                else if (kind == TokenKind.Comma && depth == 0)
                     commas++;
-                else if (c == ';' && depth == 0)
+                else if (kind == TokenKind.Semicolon && depth == 0)
                     break;
             }
             if (open <= 0)
@@ -794,7 +840,7 @@ namespace Antril.Services
             }
             // Words that are keywords only where they stand (`const i32 x`, `import A from B`, `nameof(x)`): marked here, so
             // they read as keywords whatever the grammar makes of them.
-            var words = Lexer.Tokenize(source, []);
+            var words = Words;
             bool inImport = false;
             for (int t = 0; t < words.Count; t++)
             {
