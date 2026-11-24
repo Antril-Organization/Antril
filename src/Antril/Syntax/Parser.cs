@@ -278,12 +278,29 @@ namespace Antril.Syntax
             return new ImportDirective(first, From(start)) { Alias = alias, AliasSpan = aliasSpan };
         }
 
-        /// <summary><c>static loop (E in T)</c>: the element's name and the pack's.</summary>
-        private (string Element, string Pack, int First) ParseStaticLoopHead(bool members)
+        /// <summary>
+        /// <c>static loop (E in T)</c>: the element's name and the pack's; <c>static loop (field F f in TSelf)</c>: the
+        /// field's type (as the element) and the field's name.
+        /// </summary>
+        private (string Element, string Pack, int First, string? Field) ParseStaticLoopHead(bool members)
         {
             Next();
             Next();
             Expect(TokenKind.OpenParen, "'('");
+            string? field = null;
+            if (Current.Kind == TokenKind.Identifier && Current.Text == "field" && Peek(1).Kind == TokenKind.Identifier
+                && Peek(2).Kind == TokenKind.Identifier && Peek(3).Kind == TokenKind.In)
+            {
+                var word = Next();
+                if (members)
+                    Error("AN0042", "`static loop (field …)` repeats statements per field: it goes in a body", word.Span);
+                string type = ExpectIdentifier("a name for each field's type");
+                field = ExpectIdentifier("a name for each field");
+                Expect(TokenKind.In, "'in'");
+                string self = ExpectIdentifier("the type whose fields it goes over");
+                Expect(TokenKind.CloseParen, "')'");
+                return (type, self, 0, field);
+            }
             string element = ExpectIdentifier("the name of each type of the pack");
             Expect(TokenKind.In, "'in'");
             string pack = ExpectIdentifier("a pack (`T...`)");
@@ -302,7 +319,7 @@ namespace Antril.Syntax
                 }
             }
             Expect(TokenKind.CloseParen, "')'");
-            return (element, pack, first);
+            return (element, pack, first, null);
         }
 
         /// <summary>`from` in an import (a word only there: elsewhere it is a name like any other).</summary>
@@ -440,6 +457,7 @@ namespace Antril.Syntax
                     TokenKind.Identifier when Current.Text == "reactive" && StartsDeclaration(Peek(1)) => Modifiers.Reactive,
                     TokenKind.Identifier when Current.Text == "computed" && StartsDeclaration(Peek(1)) => Modifiers.Computed,
                     TokenKind.Identifier when Current.Text == "reacts" && Peek(1).Kind == TokenKind.Identifier && Peek(2).Kind == TokenKind.OpenParen => Modifiers.Reacts,
+                    TokenKind.Identifier when Current.Text == "derive" && StartsDeclaration(Peek(1)) => Modifiers.Derive,
                     _ => Modifiers.None,
                 };
                 if (next == Modifiers.None)
@@ -475,7 +493,7 @@ namespace Antril.Syntax
             if (At(TokenKind.Static) && Peek(1).Kind == TokenKind.Loop)
             {
                 // `static loop (E in T) { members }`: members per type of a pack.
-                var (element, pack, numberedFrom) = ParseStaticLoopHead(members: true);
+                var (element, pack, numberedFrom, _) = ParseStaticLoopHead(members: true);
                 Expect(TokenKind.OpenBrace, "'{'");
                 var loopMembers = ParseMembers(TokenKind.CloseBrace, inType);
                 Expect(TokenKind.CloseBrace, "'}'");
@@ -1210,7 +1228,13 @@ namespace Antril.Syntax
                 {
                     int start = position;
                     var attributes = ParseAttributes();
+                    // `const func<T> : bool test`: a quoted function (System.Quoted<…>: the function, its tree and captures).
+                    bool quoted = AtWord("const") && Peek(1).Kind == TokenKind.Identifier && Peek(1).Text == "func";
+                    if (quoted)
+                        Next();
                     var type = ParseType();
+                    if (quoted)
+                        type = new NamedTypeSyntax(new QualifiedName(["System", "Quoted"], type.Span), [type], type.Span);
                     string name = ExpectIdentifier("a parameter name");
                     parameters.Add(new ParameterSyntax(type, name, From(start)) { Attributes = attributes });
                 }
@@ -1510,9 +1534,15 @@ namespace Antril.Syntax
                     return new BlockStmt([], From(start));
                 case TokenKind.Static when Peek(1).Kind == TokenKind.Loop:
                 {
-                    var (element, pack, _) = ParseStaticLoopHead(members: false);
+                    var (element, pack, _, field) = ParseStaticLoopHead(members: false);
                     var body = ParseStatement();
-                    return new StaticLoopStmt(element, pack, body, From(start));
+                    return new StaticLoopStmt(element, pack, body, From(start)) { Field = field };
+                }
+                case TokenKind.Static when Peek(1).Kind == TokenKind.If:
+                {
+                    Next();
+                    var decided = (IfStmt)ParseStatement();
+                    return decided with { Static = true, Span = From(start) };
                 }
                 case TokenKind.Identifier when Current.Text == "effect" && Peek(1).Kind == TokenKind.OpenBrace:
                 {

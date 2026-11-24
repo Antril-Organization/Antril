@@ -15,7 +15,7 @@ namespace Antril.Binding
     /// <summary>An expression already bound, passed where syntax is expected (an extension's receiver among the arguments).</summary>
     internal sealed record BoundExpr(H.Expr Value, TextSpan Span) : Expr(Span);
 
-    internal sealed class BodyBinder
+    internal sealed partial class BodyBinder
     {
         private static readonly H.HirType ErrorType = new H.NamedType(new H.TypeToken(int.MaxValue), []);
 
@@ -531,6 +531,12 @@ namespace Antril.Binding
             {
                 case BlockStmt block:
                     return Block(block);
+                case StaticLoopStmt { Field: not null } fieldLoop:
+                    Error("AN1423", "`static loop (field …)` goes over the fields of a type: it goes in an interface's `derive` function", fieldLoop.Span);
+                    return new H.BlockStmt([]);
+                case IfStmt { Static: true } decided:
+                    Error("AN1424", "`static if` is decided when a `derive` function is made for a type: it goes in one", decided.Span);
+                    return new H.BlockStmt([]);
                 case StaticLoopStmt loop:
                     Error("AN1420", $"`static loop` repeats code per type of a pack: it goes in a variadic template (`<{loop.Pack}...>`)", loop.Span);
                     return new H.BlockStmt([]);
@@ -1058,6 +1064,8 @@ namespace Antril.Binding
                     }
                     return Failed("AN2117", $"`await` waits for a `Task` or a `Task<T>`, not a `{Show(task.Type)}`", awaitExpr.Task.Span);
                 }
+                case LambdaExpr lambda when QuotedFunction(expected) is { } quotedFunction:
+                    return Quote(lambda, Lambda(lambda, quotedFunction, null), (H.NamedType)expected!);
                 case LambdaExpr lambda:
                     return Lambda(lambda, expected as H.FuncType, null);
                 case NameExpr name when expected is H.NativeFuncType native && IsMethodGroup(name):
@@ -2311,7 +2319,7 @@ namespace Antril.Binding
                         hint = null;
                 if (hint is not null && HasMethodParameter(hint))
                     hint = null;
-                if (hint is null && (arguments[a] is LambdaExpr || arguments[a] is NameExpr or MemberExpr && parameterTypes.Any(types => types[a] is H.FuncType) && IsMethodGroup(arguments[a])))
+                if (hint is null && (arguments[a] is LambdaExpr || arguments[a] is NameExpr or MemberExpr && parameterTypes.Any(types => FunctionOf(types[a]) is not null) && IsMethodGroup(arguments[a])))
                 {
                     deferred.Add(a);
                     continue;
@@ -2326,7 +2334,7 @@ namespace Antril.Binding
                 H.Expr? made = null;
                 for (int c = 0; c < applicable.Count && made is null; c++)
                 {
-                    if (parameterTypes[c][a] is not H.FuncType func || lambda is not null && func.Parameters.Length != lambda.Parameters.Length)
+                    if (FunctionOf(parameterTypes[c][a]) is not { } func || lambda is not null && func.Parameters.Length != lambda.Parameters.Length)
                         continue;
                     // A method group: the lambda that calls it, with as many parameters as the func type takes.
                     var written = lambda ?? GroupLambda(arguments[a], func.Parameters.Length);
@@ -2342,6 +2350,9 @@ namespace Antril.Binding
                         continue;
                     bool unknownResult = HasMethodParameter(typed.Result);
                     made = Lambda(written, new H.FuncType(typed.Parameters, unknownResult ? H.HirType.Void : typed.Result), unknownResult);
+                    // A quoted parameter (`const func<T> : R`): the function with its tree and captures.
+                    if (lambda is not null && made is H.LambdaExpr { Type: H.FuncType madeType } && QuotedFunction(parameterTypes[c][a]) is not null && QuotedType(madeType) is { } quotedType)
+                        made = Quote(lambda, made, quotedType);
                 }
                 bound[a] = made ?? (lambda is not null ? Lambda(lambda, null, null) : Expression(arguments[a], null));
             }
