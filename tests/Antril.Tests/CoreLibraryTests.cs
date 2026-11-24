@@ -2729,6 +2729,69 @@ public sealed unsafe class CoreLibraryTests : CheckedTest
                 return r;
             }
 
+            // The audit of 2026-11-24: a derived class declared before its base still runs the base's initializers; a
+            // static `str` starts with its literal; a field initializer does not see a constructor's parameter (nor does a
+            // `computed`); a nested generic type keeps its own and its outer type's constraints; a property pattern sees
+            // inherited members; `+` and `$"{t}"` on a `T : IToString`; `- -1.5` in f128 and f32 literals read once; a
+            // string in an interpolation hole.
+            public class AuditDerived : AuditMiddle { }
+            public class AuditMiddle : AuditBase { }
+            public class AuditBase { public: i32 x = 42; str name = "base"; }
+            public class AuditLog { public: static str text = "a"; static i32 n = 7; }
+            public class AuditInit { public: i32 x = 5; i32 y = x + 1; new(i32 x) { this.x = x; } }
+            public class AuditCart { public: reactive i32 items = 0; computed i32 Total => items * 10; new(i32 items) { this.items = items; } }
+            public interface IAuditVal { Val() : i32; }
+            public class AuditVal : IAuditVal { public: i32 v; new(i32 v) { this.v = v; } Val() : i32 => v; }
+            public class AuditOuter<A : IAuditVal>
+            {
+                public:
+                    A a;
+                    new(A a) { this.a = a; }
+                    Make(A b) : i32 { Inner<A> i = new Inner<A>(a, b); return i.Get(); }
+                    public class Inner<B : IAuditVal>
+                    {
+                        public:
+                            A x;
+                            B y;
+                            new(A x, B y) { this.x = x; this.y = y; }
+                            Get() : i32 => x.Val() * 10 + y.Val();
+                    }
+            }
+            public base class AuditAnimal { public: i32 Legs; }
+            public class AuditDog : AuditAnimal { public: new(i32 legs) { Legs = legs; } }
+            AuditShow<T : IToString>(T t) : str => "" + t + $"{t}";
+
+            public Audit20261124() : i32
+            {
+                i32 r = 0;
+                AuditDerived d = new AuditDerived();
+                if (d.x == 42 && d.name == "base")
+                    r += 1;
+                if (AuditLog.text + AuditLog.n == "a7")
+                    r += 10;
+                if (new AuditInit(100).y == 6)
+                    r += 100;
+                AuditCart cart = new AuditCart(2);
+                cart.items = 7;
+                if (cart.Total == 70)
+                    r += 1000;
+                if (new AuditOuter<AuditVal>(new AuditVal(4)).Make(new AuditVal(2)) == 42)
+                    r += 10000;
+                AuditAnimal animal = new AuditDog(4);
+                if (animal is AuditDog { Legs: 4 })
+                    r += 100000;
+                if (AuditShow(12) == "1212")
+                    r += 1000000;
+                f128 twice = - -1.5;
+                f32 near = 1.0000000596046447753906250001;
+                if (twice > 1.0f128 && near != 1.0f32)
+                    r += 10000000;
+                str? none = null;
+                if ($"{none ?? "none"}" == "none")
+                    r += 100000000;
+                return r;
+            }
+
             public NumberTypes() : i32
             {
                 i32[] ints = [1, 2, 3, 4];
@@ -4095,6 +4158,7 @@ public sealed unsafe class CoreLibraryTests : CheckedTest
         ("Friends", 1111, "access: `friendly` with `[FriendOf]` (and Type.IsFriendOf), `inherited` from a derived class, a private setter and nested type inside their type, an outer's private from a nested type"),
         ("DefaultAccessors", 111111, "interface accessors with a body (defaults, also in a generic interface), `base get`/`base set` required of implementers, `base.M()` and `base.Prop` from the replacing member to the interface's default (and to a base class's virtual), an extending interface's default replacing the extended one's"),
         ("EnumBases", 11111111, "enums with a base (`: u8`, `: str`), bitflag enums with `~`, `declbits` and `allbits`, conversions through the base, texts of a string-based enum"),
+        ("Audit20261124", 111111111, "the audit of 2026-11-24: base initializers whatever the declaration order, a static `str`'s literal, initializers without the constructor's parameters (and a reacting `computed`), a nested generic's constraints, inherited members in a property pattern, `T : IToString` joined to a string, `- -1.5` in f128, f32 literals rounded once, a string in a hole"),
         ("NumberTypes", 11460, "`T : number` / `snumber`: INumber<T> and ISignedNumber<T> on i32, f64 and a program's own value (operators, T.Zero, T.One, default(T))"),
     ];
 
@@ -4311,6 +4375,19 @@ public sealed unsafe class CoreLibraryTests : CheckedTest
         (string Source, string Code, string What)[] wrong =
         [
             ("class P { } F() : i32 { Dictionary<P, i32> m = new Dictionary<P, i32>(); return m.Count; }", "AN2094", "a type argument that does not implement the constraint"),
+            ("class F { public: str name; i32 n; } G() : i32 => new F().n;", "AN2150", "a field that is never null with no start and no constructor"),
+            ("class F { public: str name; new(i32 n) { } }", "AN2150", "a field that is never null a constructor leaves unset"),
+            ("class F { public: str name; new(str n) { if (n.Length > 0) name = n; else name = \"\"; } new() : (\"x\") { } }", "", "a field set by a constructor (on its paths), or by the one it delegates to"),
+            ("F() : i32 { str d = default(str); return d.Length; }", "AN2151", "`default` of a type that is never null"),
+            ("F() : bool { str? d = default(str?); return d == null; }", "", "`default` of a nullable type"),
+            ("class L { public: i32 v; new() : (1) { } new(i32 a) : () { v = a; } }", "AN1430", "constructors that delegate to each other in a circle"),
+            ("class K { public: static readonly i32 C = 0; new() { C = 1; } }", "AN2070", "a static readonly field set by an instance constructor"),
+            ("class K { public: readonly i32 v = 1; func<> later; new() { later = () => { v = 2; }; } }", "AN2070", "a readonly field set by a lambda made in the constructor"),
+            ("class A { public: virtual M<T>(T t) : i32 => 0; }", "AN1431", "a virtual generic method (said here, not by the lowering without a position)"),
+            ("class D { private: i32 secret; } F(any a) : bool => a is D { secret: 1 };", "AN1401", "a private field in a property pattern"),
+            ("class W { public: static str s = \"x\"; } F() : str => W.s;", "", "a static `str` with a literal"),
+            ("public value Coins { public: i64 Cents; new(i64 cents) { Cents = cents; } op <=>(Coins a, Coins b) : Coins precedence(PrecedenceLevel.Relational) associativity(Associativity.None) => new Coins(a.Cents - b.Cents); } F(Coins a, Coins b, Coins c) : Coins => (a <=> b) <=> c;", "", "a non-chaining operator on an operand in parentheses"),
+            ("public value Coins { public: i64 Cents; new(i64 cents) { Cents = cents; } op <=>(Coins a, Coins b) : Coins precedence(PrecedenceLevel.Relational) associativity(Associativity.None) => new Coins(a.Cents - b.Cents); } F(Coins a, Coins b, Coins c) : Coins => a <=> b <=> c;", "AN0027", "a non-chaining operator chained"),
             ("F<T : snumber>(T x) : T => -x; G() : u8 => F((u8)1);", "AN2094", "an unsigned number is not an `snumber`"),
             ("value Bad : INumber<Bad> { public: i32 v; }", "AN1045", "a value that declares INumber without its operators and constants"),
             ("F<T : number>(T a, T b) : T => a & b;", "AN2078", "an operator the constraint does not give"),

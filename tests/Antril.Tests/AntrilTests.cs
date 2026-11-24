@@ -682,6 +682,11 @@ public sealed unsafe class AntrilTests : CheckedTest
         (string Source, string Code, string What)[] wrong =
         [
             ("F() : i32 { return x; }", "AN2033", "unknown name"),
+            ("F() : i32 => 1.5i32;", "AN0003", "a float with an integer suffix (its bits were taken as the integer)"),
+            ("F() : u8 => 1e3u8;", "AN0003", "an exponent with an integer suffix (an internal error)"),
+            ("F() : i32 => 12abc;", "AN0003", "a number followed by letters is one wrong number"),
+            ("F() : i32 => 0b102;", "AN0003", "a binary number with a digit beyond 1"),
+            ("G(i32 v) : bool => v > 3; F(i32 n) : i32 => n switch { var v when G((i32 x) => x, v) => 1, _ => 0 };", "AN2056", "a lambda in a guard's call is parsed (then bound: here the wrong arguments)"),
             ("F() : u32 => '😀';", "", "a character beyond the BMP is its code point (a u32)"),
             ("F() : u16 { u16 c = '😀'; return c; }", "AN2084", "…which a u16 does not hold"),
             ("F() : u32 => 'ab';", "AN0005", "a character literal is one character"),
@@ -777,7 +782,7 @@ public sealed unsafe class AntrilTests : CheckedTest
             ("public value R { public: i32 X; Bump() { X++; } } public class C { public: readonly R R; new() { R.X = 1; R.Bump(); } }", "", "a readonly field's value changes in the constructor"),
             ("public value R { public: i32 X; Bump() { X++; } Twice() { Bump(); } } public class C { public: readonly R R; new() { } } F(C c) { c.R.Twice(); }", "AN2070", "a method that changes the value through another of its own"),
             ("public value R { public: i32 X; i32 P { get => X; set => X = value; } } public class C { public: readonly R R; new() { } } F(C c) { c.R.P = 1; }", "AN2070", "a value's setter on a value held in a readonly field"),
-            ("public class Inner { public: i32 X; } public value R { public: Inner In; Touch() { In.X = 1; } } public class C { public: readonly R R; new() { } } F(C c) { c.R.In.X = 2; c.R.Touch(); }", "", "an object held in a readonly value changes freely"),
+            ("public class Inner { public: i32 X; } public value R { public: Inner In; Touch() { In.X = 1; } } public class C { public: readonly R R; new(R r) { R = r; } } F(C c) { c.R.In.X = 2; c.R.Touch(); }", "", "an object held in a readonly value changes freely"),
             ("import A, B from Lib as X; F() { }", "AN0034", "one alias for each name imported"),
             ("import Nope from Lib; into namespace Lib { G() : i32 => 1; } F() { }", "AN1084", "a name the namespace does not have"),
             ("import G from Lib as H; into namespace Lib { G() : i32 => 1; } F() : i32 => H();", "", "a function taken by name, by its alias"),
@@ -882,6 +887,9 @@ public sealed unsafe class AntrilTests : CheckedTest
             ("a chain of 100000 terms", Program("return " + string.Join(" + ", Enumerable.Repeat("a", 100_000)) + ";"), ""),
             ("a chain of 50000 comparisons and conditions", Program("return " + string.Join(" && ", Enumerable.Repeat("a < 1", 50_000)) + " ? 1 : 0;"), ""),
             ("1000 nested type arguments", Program("return a;", deepType + " x;\n"), "AN0040"),
+            ("500 nested lambdas", Program("var f = " + string.Concat(Enumerable.Repeat("x => ", 500)) + "0; return a;"), "AN0040"),
+            ("700 nested interpolated strings", Program("return " + string.Concat(Enumerable.Repeat("$\"{", 700)) + "a" + string.Concat(Enumerable.Repeat("}\"", 700)) + ".Length;"), "AN0040"),
+            ("20000 nested interpolated strings", Program("return " + string.Concat(Enumerable.Repeat("$\"{", 20_000)) + "a" + string.Concat(Enumerable.Repeat("}\"", 20_000)) + ".Length;"), "AN0040"),
         ];
         foreach (var (what, text, code) in cases)
         {

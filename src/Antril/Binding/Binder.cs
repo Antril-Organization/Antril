@@ -109,10 +109,15 @@ namespace Antril.Binding
             {
                 if (type.Declaration is { } declaration)
                 {
+                    // A nested type's own parameters come after its outer types' (which it has too).
                     for (int g = 0; g < declaration.Generics.Length; g++)
-                        type.Definition.Generics[g] = Constrained(declaration.Generics[g], type.Scope, new H.GenericParamType(H.GenericOwner.Type, type.OuterGenericCount + g));
+                        type.Definition.Generics[type.OuterGenericCount + g] = Constrained(declaration.Generics[g], type.Scope, new H.GenericParamType(H.GenericOwner.Type, type.OuterGenericCount + g));
                 }
             }
+            // …and its outer types' parameters with their constraints: the nearest outer type has them all (outermost first).
+            foreach (var type in Types.Values.Where(t => t.Declaration is not null && t.Outer is not null && t.OuterGenericCount > 0).OrderBy(Depth))
+                for (int g = 0; g < type.OuterGenericCount && g < type.Outer!.Definition.Generics.Count; g++)
+                    type.Definition.Generics[g] = type.Outer.Definition.Generics[g];
             foreach (var type in Types.Values)
                 ResolveBase(type);
             // Constants first: enum values and other constants may name them, wherever they are declared.
@@ -284,6 +289,13 @@ namespace Antril.Binding
         {
             string typeName = outer is null ? declaration.Name : $"{outer.Name}.{declaration.Name}";
             string fullName = scope.Namespace.Length == 0 ? typeName : $"{scope.Namespace}.{typeName}";
+            // An extension is named after its file and place (`$ext.Util.3`): two files of the same name in other folders
+            // may give the same one, which is not the program declaring a type twice.
+            for (int n = 2; declaration.Kind == Syntax.TypeKind.Extension && Types.ContainsKey(fullName); n++)
+            {
+                typeName = $"{(outer is null ? declaration.Name : $"{outer.Name}.{declaration.Name}")}.{n}";
+                fullName = scope.Namespace.Length == 0 ? typeName : $"{scope.Namespace}.{typeName}";
+            }
             // Types may share a name when their numbers of type parameters differ (Task, Task<T>): the first keeps the
             // name as its key, the others are keyed with `N.
             int arity = (outer?.Scope.TypeParameters.Length ?? 0) + declaration.Generics.Length;
@@ -1607,9 +1619,10 @@ namespace Antril.Binding
             }
             bool isStatic = owner.IsModule || (field.Modifiers & Modifiers.Static) != 0 || owner.IsStatic;
             H.HirConstant? value = null;
-            // A static field's initializer that is not a constant runs in the type's static constructor.
+            // A static field's initializer that is not a constant runs in the type's static constructor. Only a number, a
+            // bool, a char, an enum member or null is a start the image holds: a string (a handle to make) is set there too.
             if (isStatic && field.Initializer is { } initializer)
-                value = Constant(initializer, type, scope, new DiagnosticBag(), owner);
+                value = Constant(initializer, type, scope, new DiagnosticBag(), owner) is { } constant and not H.StringConstant ? constant : null;
             var flags = isStatic ? H.FieldFlags.Static : H.FieldFlags.None;
             // A record's fields are all readonly: `with` makes a changed copy. A ValueTuple's items may be set (`t.Item1 = 2`).
             if ((field.Modifiers & Modifiers.Readonly) != 0 || !isStatic && (owner.Definition.Flags & H.TypeFlags.Record) != 0 && owner.FullName != "System.ValueTuple")
@@ -1789,6 +1802,12 @@ namespace Antril.Binding
             if (isAbstract && (!(owner.IsClass || owner.IsInterface) || owner.IsModule || isStatic && !owner.IsInterface))
             {
                 Error("AN1027", $"`{function.Name}` needs a body (only instance methods of a base class, or the methods of an interface, can leave it out)", source, function.NameSpan);
+                return;
+            }
+            // A virtual method is one slot every derived class fills: a generic one would be one per type argument.
+            if (owner.IsClass && !isStatic && (isVirtual || isAbstract) && function.Generics.Length > 0)
+            {
+                Error("AN1431", $"`{function.Name}` is virtual and generic: a virtual method takes no type parameters (put them on the class, or make the method final)", source, function.NameSpan);
                 return;
             }
             if (isExtern && (function.Body is not null || function.Generics.Length > 0))
@@ -2371,29 +2390,83 @@ namespace Antril.Binding
             }
         }
 
+        /// <summary>How many types a type is nested in.</summary>
+        private static int Depth(TypeSymbol type)
+        {
+            int depth = 0;
+            for (var outer = type.Outer; outer is not null; outer = outer.Outer)
+                depth++;
+            return depth;
+        }
+
         /// <summary>
         /// A class with instance field initializers or a base whose constructor needs calling gets a constructor without
         /// parameters when it declares none (it runs the initializers and the base's).
         /// </summary>
         private void AddImplicitConstructors()
         {
+            // A base before the classes that derive from it, wherever each is declared: whether a class needs a constructor
+            // depends on whether its base has one (perhaps the implicit one this adds).
+            var done = new HashSet<TypeSymbol>();
             foreach (var type in Types.Values)
+                AddImplicitConstructor(type, done);
+        }
+
+        private void AddImplicitConstructor(TypeSymbol type, HashSet<TypeSymbol> done)
+        {
+            // The chain from the type up to the first base done (or external), handled from the top (a cycle stops at a type seen).
+            var chain = new List<TypeSymbol>();
+            for (var b = type; b is not null && !b.IsExternal && !done.Contains(b) && !chain.Contains(b); b = b.Base)
+                chain.Add(b);
+            for (int i = chain.Count - 1; i >= 0; i--)
             {
-                if (type.IsExternal || type.Constructors.Count > 0 || !(type.IsClass || type.IsStruct) || type.IsStatic)
-                    continue;
-                bool reacts = type.Methods.Values.SelectMany(m => m).Any(m => m.Function is { } f && (f.Modifiers & Modifiers.Reacts) != 0);
-                if (type.InitializedFields.Count == 0 && (type.Base is null || type.Base.Constructors.Count == 0) && !reacts)
-                    continue;
-                int index = type.Definition.AddMethod(new H.MethodDef(".new", H.HirType.Void)
-                {
-                    Kind = H.MethodKind.Constructor,
-                    Access = H.Access.Public,
-                    Flags = H.MethodFlags.Generated,
-                });
-                var symbol = new MethodSymbol(type, ".new", [], [], H.HirType.Void, index) { IsConstructor = true, Scope = type.Scope };
-                type.Constructors.Add(symbol);
-                bodies.Add(symbol);
+                done.Add(chain[i]);
+                AddImplicitConstructorTo(chain[i]);
             }
+        }
+
+        /// <summary>Whether a type has a zero value (numbers, bool, null for nullable types, structs of those).</summary>
+        internal bool Zeroable(H.HirType type, HashSet<H.HirType>? visiting = null) => type switch
+        {
+            H.PrimitiveType => true,
+            H.NullableType => true,
+            H.PointerType => true,
+            H.NativeFuncType => true,
+            H.InlineArrayType inline => Zeroable(inline.Element, visiting),
+            H.GenericParamType => true,
+            H.NamedType when SymbolOf(type) is { IsEnum: true } => true,
+            H.NamedType when SymbolOf(type) is { IsStruct: true } s => ValueZeroable(type, s, visiting ??= []),
+            _ => false,
+        };
+
+        /// <summary>A value has a zero when its fields do (one that holds itself, reported elsewhere, is not walked again).</summary>
+        private bool ValueZeroable(H.HirType type, TypeSymbol symbol, HashSet<H.HirType> visiting)
+        {
+            if (!visiting.Add(type))
+                return false;
+            bool zero = symbol.Fields.Values.Where(f => !f.IsStatic).All(f => Zeroable(f.Type, visiting));
+            visiting.Remove(type);
+            return zero;
+        }
+
+        private void AddImplicitConstructorTo(TypeSymbol type)
+        {
+            if (type.Constructors.Count > 0 || !(type.IsClass || type.IsStruct) || type.IsStatic)
+                return;
+            bool reacts = type.Methods.Values.SelectMany(m => m).Any(m => m.Function is { } f && (f.Modifiers & Modifiers.Reacts) != 0);
+            // A field that is never null and has no start: the implicit constructor reports it (it would leave the field null).
+            bool unset = type.IsClass && type.Fields.Values.Any(f => !f.IsStatic && !f.IsConst && f.Declaration is { Initializer: null } && type.InPlace != f && !Zeroable(f.Type));
+            if (type.InitializedFields.Count == 0 && (type.Base is null || type.Base.Constructors.Count == 0) && !reacts && !unset)
+                return;
+            int index = type.Definition.AddMethod(new H.MethodDef(".new", H.HirType.Void)
+            {
+                Kind = H.MethodKind.Constructor,
+                Access = H.Access.Public,
+                Flags = H.MethodFlags.Generated,
+            });
+            var symbol = new MethodSymbol(type, ".new", [], [], H.HirType.Void, index) { IsConstructor = true, Scope = type.Scope };
+            type.Constructors.Add(symbol);
+            bodies.Add(symbol);
         }
 
         /// <summary>
@@ -2761,7 +2834,35 @@ namespace Antril.Binding
                     One(i);
             foreach (var bag in bags)
                 Diagnostics.AddRange(bag);
+            CheckDelegationCycles(bound);
             MakeIterators();
+        }
+
+        /// <summary>
+        /// Constructors that delegate to each other in a circle (<c>new() : (1)</c>, <c>new(i32 a) : ()</c>) would call each
+        /// other forever: reported once, on the first of the circle written.
+        /// </summary>
+        private void CheckDelegationCycles(List<MethodSymbol> bound)
+        {
+            var reported = new HashSet<MethodSymbol>();
+            foreach (var start in bound)
+            {
+                if (start.Delegates is null || reported.Contains(start))
+                    continue;
+                var seen = new List<MethodSymbol>();
+                var at = start;
+                while (at is not null && !seen.Contains(at))
+                {
+                    seen.Add(at);
+                    at = at.Delegates;
+                }
+                if (at != start)
+                    continue;
+                reported.UnionWith(seen);
+                var first = seen.Where(m => m.Constructor is not null).MinBy(m => m.Constructor!.HeadSpan.Start) ?? start;
+                Error("AN1430", "these constructors call each other in a circle (each `: (…)` leads back to this one): one of them must not delegate",
+                    first.Scope.Source, first.Constructor?.HeadSpan ?? first.NameSpan);
+            }
         }
 
         // ── Constants ──────────────────────────────────────
@@ -3376,12 +3477,12 @@ namespace Antril.Binding
                         return kind is H.ConstraintKinds.Managed or H.ConstraintKinds.Copy;
                     if (symbol.IsClass)
                         return kind is H.ConstraintKinds.Managed or H.ConstraintKinds.Copy
-                            || kind is H.ConstraintKinds.New && !symbol.IsAbstract && !symbol.IsStatic && (symbol.Constructors.Count == 0 || symbol.Constructors.Any(c => c.Definition.Parameters.Count == 0));
+                            || kind is H.ConstraintKinds.New && !symbol.IsAbstract && !symbol.IsStatic && (symbol.Constructors.Count == 0 || symbol.Constructors.Any(c => c.Definition.Parameters.Count == 0 && c.Definition.Access is H.Access.Public or H.Access.Internal));
                     // A value type: what its fields are.
                     if (kind is H.ConstraintKinds.Value)
                         return true;
                     if (kind is H.ConstraintKinds.New)
-                        return symbol.Constructors.Count == 0 || symbol.Constructors.Any(c => c.Definition.Parameters.Count == 0);
+                        return symbol.Constructors.Count == 0 || symbol.Constructors.Any(c => c.Definition.Parameters.Count == 0 && c.Definition.Access is H.Access.Public or H.Access.Internal);
                     if (!visiting.Add(type))
                         return kind is not H.ConstraintKinds.Managed;
                     bool result = kind is H.ConstraintKinds.Managed ? false : true;
