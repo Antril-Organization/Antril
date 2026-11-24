@@ -22,6 +22,9 @@ namespace Antril.Syntax
         /// <summary>Above zero while parsing patterns and guards, where <c>name =&gt;</c> ends a switch arm (not a lambda).</summary>
         private int noLambda;
 
+        /// <summary>The operator expressions written in parentheses (a non-chaining operator may take one as an operand).</summary>
+        private readonly HashSet<object> parenthesized = new(ReferenceEqualityComparer.Instance);
+
         /// <summary>Above zero while a type pattern's type is parsed: `?` there is not a nullable type.</summary>
         private int typePatterns;
 
@@ -44,7 +47,9 @@ namespace Antril.Syntax
 
         private void Enter()
         {
-            if (nesting >= MaxNesting)
+            // The count alone does not bound the stack (a level of lambdas or interpolations takes many frames): the stack
+            // left is checked too.
+            if (nesting >= MaxNesting || !System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack())
                 throw new TooDeepException(Current.Span);
             nesting++;
         }
@@ -1027,9 +1032,19 @@ namespace Antril.Syntax
                     Next();
                 if (!(AtWord("get") || AtWord("set")))
                 {
+                    // Not a property after all (often a stray `}` before it ended the code around): reported once, the
+                    // rest of its braces skipped.
                     Error("AN0015", $"expected 'get' or 'set', found {Current}", Current.Span);
-                    Next();
-                    continue;
+                    int braces = 0;
+                    while (!At(TokenKind.EndOfFile) && !(At(TokenKind.CloseBrace) && braces == 0))
+                    {
+                        if (At(TokenKind.OpenBrace))
+                            braces++;
+                        else if (At(TokenKind.CloseBrace))
+                            braces--;
+                        Next();
+                    }
+                    break;
                 }
                 bool getter = Next().Text == "get";
                 BlockStmt? body = Accept(TokenKind.Semicolon) ? null : ParseBody(returnsValue: getter);
@@ -1921,7 +1936,7 @@ namespace Antril.Syntax
                 var right = ParseBinary(op.Right ? op.Level : op.Level + 1);
                 if (op.Symbol is { } symbol)
                 {
-                    if (op.NoChain && left is OperatorExpr { Symbol: var before, Operands.Length: 2 } && before == symbol)
+                    if (op.NoChain && left is OperatorExpr { Symbol: var before, Operands.Length: 2 } && before == symbol && !parenthesized.Contains(left))
                         Error("AN0027", $"`{symbol}` does not chain (`a {symbol} b {symbol} c`): write parentheses", symbolSpan);
                     left = new OperatorExpr(symbol, [left, right], false, From(start));
                     continue;
@@ -1977,7 +1992,8 @@ namespace Antril.Syntax
                 if (op == UnaryOperator.Negate && operand is IntegerLiteral literal)
                     return new IntegerLiteral(-literal.Value, From(start)) { Suffix = literal.Suffix };
                 if (op == UnaryOperator.Negate && operand is FloatLiteral real)
-                    return new FloatLiteral(-real.Value, From(start)) { Suffix = real.Suffix, Text = real.Text is null ? null : "-" + real.Text };
+                    // The text changes sign too (`- -1.5` is 1.5): the widths read from it (f16, f128, f256) see the same number.
+                    return new FloatLiteral(-real.Value, From(start)) { Suffix = real.Suffix, Text = real.Text is null ? null : real.Text.StartsWith('-') ? real.Text[1..] : "-" + real.Text };
                 return new UnaryExpr(op, operand, From(start));
             }
             if (At(TokenKind.Plus))
@@ -2083,11 +2099,20 @@ namespace Antril.Syntax
         {
             Expect(TokenKind.OpenParen, "'('");
             var arguments = new List<Expr>();
-            if (!At(TokenKind.CloseParen))
+            int outerNoLambda = noLambda;
+            noLambda = 0; // between brackets a `=>` is a lambda's (not a switch arm's)
+            try
             {
-                do
-                    arguments.Add(ParseExpression());
-                while (Accept(TokenKind.Comma));
+                if (!At(TokenKind.CloseParen))
+                {
+                    do
+                        arguments.Add(ParseExpression());
+                    while (Accept(TokenKind.Comma));
+                }
+            }
+            finally
+            {
+                noLambda = outerNoLambda;
             }
             Expect(TokenKind.CloseParen, "')'");
             return [.. arguments];
@@ -2139,8 +2164,14 @@ namespace Antril.Syntax
                 if (alignment is not null)
                 {
                     // Positive: padded on the left (right-aligned); negative: on the right.
-                    bool left = alignment is IntegerLiteral { Value.Sign: < 0 };
-                    Expr width = alignment is IntegerLiteral literal && literal.Value.Sign < 0 ? new IntegerLiteral(-literal.Value, literal.Span) : alignment;
+                    // Written with a minus (`{x,-5}`, `{x,-w}`): on the right, by what follows the minus.
+                    bool left = alignment is IntegerLiteral { Value.Sign: < 0 } or UnaryExpr { Operator: UnaryOperator.Negate };
+                    Expr width = alignment switch
+                    {
+                        IntegerLiteral literal when literal.Value.Sign < 0 => new IntegerLiteral(-literal.Value, literal.Span),
+                        UnaryExpr { Operator: UnaryOperator.Negate, Operand: var magnitude } => magnitude,
+                        _ => alignment,
+                    };
                     if (part == value2)
                         part = new BinaryExpr(BinaryOperator.Add, new StringLiteral("", part.Span), part, part.Span);
                     part = new CallExpr(new MemberExpr(part, left ? "PadRight" : "PadLeft", [], alignment.Span) { NameSpan = alignment.Span }, [width], TextSpan.FromBounds(part.Span.Start, alignment.Span.End));
@@ -2234,18 +2265,30 @@ namespace Antril.Syntax
                 case TokenKind.OpenParen:
                 {
                     Next();
-                    var inner = ParseExpression();
-                    if (At(TokenKind.Comma))
+                    int outerNoLambda = noLambda;
+                    noLambda = 0; // between brackets a `=>` is a lambda's (not a switch arm's)
+                    try
                     {
-                        // `(a, b)`: a tuple.
-                        var items = new List<Expr> { inner };
-                        while (Accept(TokenKind.Comma))
-                            items.Add(ParseExpression());
+                        var inner = ParseExpression();
+                        if (At(TokenKind.Comma))
+                        {
+                            // `(a, b)`: a tuple.
+                            var items = new List<Expr> { inner };
+                            while (Accept(TokenKind.Comma))
+                                items.Add(ParseExpression());
+                            Expect(TokenKind.CloseParen, "')'");
+                            return new TupleExpr([.. items], From(start));
+                        }
                         Expect(TokenKind.CloseParen, "')'");
-                        return new TupleExpr([.. items], From(start));
+                        // `(a <=> b) <=> c`: written in parentheses, so not a chain.
+                        if (inner is OperatorExpr)
+                            parenthesized.Add(inner);
+                        return inner;
                     }
-                    Expect(TokenKind.CloseParen, "')'");
-                    return inner;
+                    finally
+                    {
+                        noLambda = outerNoLambda;
+                    }
                 }
                 case TokenKind.OpenBracket:
                 {
@@ -2270,6 +2313,22 @@ namespace Antril.Syntax
                         while (Accept(TokenKind.Comma))
                             lengths.Add(ParseExpression());
                         Expect(TokenKind.CloseBracket, "']'");
+                        // `new i32[3][]`: three arrays (each null until made): the element type is what the brackets after say.
+                        while (At(TokenKind.OpenBracket) && Peek(1).Kind is TokenKind.CloseBracket or TokenKind.Comma)
+                        {
+                            Next();
+                            int rank = 1;
+                            while (Accept(TokenKind.Comma))
+                                rank++;
+                            Expect(TokenKind.CloseBracket, "']'");
+                            type = new ArrayTypeSyntax(type, rank, TextSpan.FromBounds(type.Span.Start, Previous.Span.End));
+                            // `new i32[3][]?`: arrays that start null (an array of arrays starts zeroed).
+                            if (At(TokenKind.Question))
+                            {
+                                Next();
+                                type = new NullableTypeSyntax(type, TextSpan.FromBounds(type.Span.Start, Previous.Span.End));
+                            }
+                        }
                         return new NewArrayExpr(type, [.. lengths], From(start));
                     }
                     var arguments = At(TokenKind.OpenParen) ? ParseArguments() : [];
