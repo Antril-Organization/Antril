@@ -271,7 +271,11 @@ namespace Antril.Services
             switch (e)
             {
                 case H.LiteralExpr literal:
-                    return view.Constant(literal.Value, owner, names, imports);
+                {
+                    // A negative number is a negation where it is written: `(-5).CompareTo(x)`, not `-5.CompareTo(x)`.
+                    string written = view.Constant(literal.Value, owner, names, imports);
+                    return written.StartsWith('-') ? Wrap(written, 14, minimum) : written;
+                }
                 case H.LocalExpr l:
                     return l.Local >= 0 && l.Local < localNames.Length ? AntrilView.Mark(localNames[l.Local], SemanticKind.Variable) : "?";
                 case H.ParamExpr p:
@@ -372,7 +376,16 @@ namespace Antril.Services
                 case H.CoalesceExpr c:
                     return Wrap($"{Expr(c.Left, 4)} ?? {Expr(c.Right, 3)}", 3, minimum);
                 case H.ConditionalAccessExpr c:
-                    return Expr(c.Receiver, 15) + "?" + Expr(c.Access, 15).TrimStart('.');
+                {
+                    // The access is written on an empty receiver: a field `.Length`, a property or call `Length`, an
+                    // indexer `this[0]`; as `t?.Length`, `t?[0]`.
+                    string access = Expr(c.Access, 15);
+                    if (access.StartsWith("this[", StringComparison.Ordinal))
+                        access = access[4..];
+                    else if (!access.StartsWith('.') && !access.StartsWith('['))
+                        access = "." + access;
+                    return Expr(c.Receiver, 15) + "?" + access;
+                }
                 case H.ReceiverExpr:
                     return "";
                 case H.LambdaExpr l:

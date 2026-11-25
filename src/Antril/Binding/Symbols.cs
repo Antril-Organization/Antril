@@ -284,6 +284,9 @@ namespace Antril.Binding
 
     internal sealed class MethodSymbol(TypeSymbol owner, string name, H.HirType[] parameters, string[] parameterNames, H.HirType result, int index)
     {
+        /// <summary>A constructor that delegates with <c>: (…)</c>: the one it runs (set when its body is bound).</summary>
+        public MethodSymbol? Delegates { get; set; }
+
         /// <summary>Whether the method is a conversion (<c>op (T)(S s)</c>: named <c>$conv_…</c>).</summary>
         public bool IsConversion => Name.StartsWith("$conv_", StringComparison.Ordinal);
 

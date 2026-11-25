@@ -140,6 +140,9 @@ namespace Antril.Syntax
             }
         }
 
+        /// <summary>How many interpolated strings are open around the one being read (each is read by a call of its own).</summary>
+        private int interpolations;
+
         /// <summary><c>$"…"</c>: its text pieces as strings (<c>{{</c> and <c>}}</c> stand for braces), its holes' tokens.</summary>
         private void Interpolated(List<Token> tokens)
         {
@@ -213,7 +216,8 @@ namespace Antril.Syntax
                             position = close + 2;
                         }
                     }
-                    if (position >= text.Length || text[position] == '\n' || text[position] == '"' && depth == 0 || text[position] == '/' && Peek(1) == '/')
+                    // A `"` here starts a string (`{n ?? "none"}`); a hole left open ends with its line.
+                    if (position >= text.Length || text[position] == '\n' || text[position] == '/' && Peek(1) == '/')
                     {
                         diagnostics.Error("AN0007", "an interpolated string's hole ends with `}`", source, Span(start));
                         tokens.Add(new Token(TokenKind.HoleEnd, new TextSpan(position, 0), "}"));
@@ -238,8 +242,19 @@ namespace Antril.Syntax
                         depth++;
                     else if (h is ')' or ']' or '}')
                         depth--;
-                    if (h == '$' && Peek(1) == '"')
+                    if (h == '$' && Peek(1) == '"' && interpolations >= Parser.MaxNesting)
+                    {
+                        // As deep as the parser goes (and more than the stack holds): the rest of the line is not read.
+                        diagnostics.Error("AN0040", $"the code is nested too deeply (more than {Parser.MaxNesting} levels): split it", source, new TextSpan(position, 2));
+                        while (position < text.Length && text[position] != '\n')
+                            position++;
+                    }
+                    else if (h == '$' && Peek(1) == '"')
+                    {
+                        interpolations++;
                         Interpolated(tokens);
+                        interpolations--;
+                    }
                     else if (Next() is { } token)
                         tokens.Add(token);
                 }
@@ -432,11 +447,25 @@ namespace Antril.Syntax
             }
             while (Peek() == '_')
                 position++; // `1_000_`: trailing separators are allowed
+            // A number ends here: `12abc`, `0b102`, `1i33`, `2.5e` are one wrong number (not a number and a name).
+            if (char.IsAsciiLetterOrDigit(Peek()))
+            {
+                while (char.IsAsciiLetterOrDigit(Peek()) || Peek() == '_')
+                    position++;
+                diagnostics.Error("AN0003", $"invalid number '{text[start..position]}'", source, Span(start));
+                return new Token(TokenKind.Integer, Span(start), text[start..position], BigInteger.Zero);
+            }
             string literal = text[start..position];
             if (digits.Length == 0)
             {
                 diagnostics.Error("AN0003", $"invalid number '{literal}'", source, Span(start));
                 return new Token(TokenKind.Integer, Span(start), literal, BigInteger.Zero);
+            }
+            // `1.5i32`: a fraction or an exponent makes a float, which an integer type does not name (write `(i32)1.5`).
+            if (isFloat && suffix is ['i' or 'u', ..])
+            {
+                diagnostics.Error("AN0003", $"invalid number '{literal}': a number with a fraction or an exponent is a float (an integer suffix does not fit it)", source, Span(start));
+                return new Token(TokenKind.Float, Span(start), literal, 0.0);
             }
             if (isFloat && radix != 10)
             {
@@ -500,7 +529,15 @@ namespace Antril.Syntax
             if (value.Length == 1 && char.IsHighSurrogate(value[0]) && position < text.Length && char.IsLowSurrogate(text[position]))
                 value += text[position++];
             if (Peek() != '\'' || value.Length == 0)
-                diagnostics.Error("AN0005", "invalid character literal", source, Span(start));
+            {
+                // To its closing quote on the line (`'ab'`, `''`), so what follows reads as code again.
+                int close = position;
+                while (close < text.Length && text[close] != '\'' && text[close] != '\n')
+                    close++;
+                if (close < text.Length && text[close] == '\'')
+                    position = close + 1;
+                diagnostics.Error("AN0005", "invalid character literal: one character (or one escape) between quotes", source, Span(start));
+            }
             else
                 position++;
             return new Token(TokenKind.Char, Span(start), text[start..position], value);
@@ -517,6 +554,12 @@ namespace Antril.Syntax
             char c = text[position++];
             if (c != '\\' || position >= text.Length)
                 return c.ToString();
+            // A backslash that ends the line escapes nothing: the literal ends with its line (`\n` writes a new line).
+            if (text[position] is '\n' or '\r')
+            {
+                diagnostics.Error("AN0008", "a `\\` at the end of a line escapes nothing: a string ends with its line (write `\\n` for a new line)", source, new TextSpan(start, 1));
+                return "";
+            }
             char e = text[position++];
             switch (e)
             {

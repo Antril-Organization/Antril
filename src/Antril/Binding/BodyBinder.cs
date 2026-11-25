@@ -22,7 +22,7 @@ namespace Antril.Binding
         private readonly Binder binder;
         private readonly MethodSymbol method;
         private readonly TypeSymbol owner;
-        private readonly DiagnosticBag bag;
+        private DiagnosticBag bag;
         private readonly DeclarationScope scope;
         private readonly SourceText source;
         private readonly List<H.HirLocal> locals = [];
@@ -203,6 +203,8 @@ namespace Antril.Binding
             var body = method.Function?.Body ?? method.Constructor?.Body ?? method.AccessorBody;
             var bodySpan = method.Function?.Span ?? method.Constructor?.Span ?? body?.Span ?? default;
             Push(bodySpan);
+            if (parameters.ContainsKey("this"))
+                Error("AN2153", "`this` is the object a method runs on: a parameter is named otherwise", method.NameSpan);
             if (recorder is not null)
             {
                 recorder.Add(new RecordedBody(source, method, bodySpan));
@@ -260,6 +262,8 @@ namespace Antril.Binding
                 }
             }
             var block = new H.BlockStmt([.. statements]);
+            if (method.IsConstructor && method.Constructor?.ThisArguments is null && owner.IsClass)
+                CheckFieldsSet(block);
             // A destructor runs, then its base's (whatever happens in it: a finally).
             if (method.Name == "destroy" && method.Parameters.Length == 0 && !method.IsStatic && owner.IsClass && owner.Base is { } baseClass
                 && owner.BaseType is { } baseType && baseClass.FindMethods("destroy").FirstOrDefault(m => !m.IsStatic && m.Parameters.Length == 0) is { } baseDestroy)
@@ -303,14 +307,14 @@ namespace Antril.Binding
             {
                 var call = ResolveCall(owner.Constructors, delegated, declaration.HeadSpan, "a constructor of this type", _ => OwnArguments);
                 if (call is { } target)
+                {
+                    method.Delegates = target.Method;
                     yield return new H.ExprStmt(new H.CallExpr(self, target.Method.Token, target.TypeArguments, target.Arguments, H.HirType.Void) { NonVirtual = true });
+                }
                 yield break;
             }
-            foreach (var field in owner.InitializedFields)
-            {
-                var value = Convert(Expression(field.Declaration!.Initializer!, field.Type), field.Type, field.Declaration.Initializer!.Span);
-                yield return new H.ExprStmt(new H.AssignExpr(new H.FieldExpr(self, field.Token, field.Type), value, field.Type));
-            }
+            foreach (var statement in FieldInitializers(self))
+                yield return statement;
             if (owner.Base is { } baseType && owner.BaseType is { } baseOfOwner)
             {
                 var span = declaration?.HeadSpan ?? owner.Declaration?.NameSpan ?? default;
@@ -325,6 +329,105 @@ namespace Antril.Binding
             {
                 Error("AN2002", $"`{owner.Name}` has no base class", declaration.HeadSpan);
             }
+        }
+
+        /// <summary>
+        /// A field whose type has no zero (a <c>str</c>, a class: never null) starts with what its initializer or a
+        /// constructor gives it: one that a constructor (not delegating to another) leaves unset would be null. Set
+        /// somewhere in the constructor is enough here (on some path, or through a lambda, is not checked).
+        /// </summary>
+        private void CheckFieldsSet(H.BlockStmt body)
+        {
+            List<FieldSymbol>? unset = null;
+            foreach (var field in owner.Fields.Values)
+            {
+                if (field.IsStatic || field.IsConst || field.Declaration is null || owner.InitializedFields.Contains(field) || IsError(field.Type) || Zeroable(field.Type)
+                    || owner.InPlace == field)
+                    continue;
+                (unset ??= []).Add(field);
+            }
+            if (unset is null)
+                return;
+            var walker = new FieldsSet(binder);
+            walker.Visit(body);
+            // `this` given to code the check does not read (a method of its own, `OpenTables(connection)`, an argument, a
+            // lambda): what that sets is not known here, so nothing is reported.
+            if (walker.Escapes)
+                return;
+            foreach (var field in unset)
+            {
+                if (walker.Set.Contains(field.Token))
+                    continue;
+                var span = method.Constructor?.HeadSpan ?? field.Declaration!.NameSpan;
+                Error("AN2150", $"`{field.Name}` ({Show(field.Type)}) is never null: give it a start (`{Show(field.Type)} {field.Name} = …;`), set it in "
+                    + (method.Constructor is null ? "a constructor" : "this constructor") + $", or make it `{Show(field.Type)}?`", span);
+            }
+        }
+
+        /// <summary>
+        /// The fields of <c>this</c> a body assigns (or lends as <c>&amp;mut</c>), and whether <c>this</c> goes anywhere
+        /// else than its fields and the constructor it runs first (a method's receiver, an argument, a lambda).
+        /// </summary>
+        private sealed class FieldsSet(Binder binder) : H.HirWalker
+        {
+            public readonly HashSet<H.MemberToken> Set = [];
+            public bool Escapes { get; private set; }
+
+            public override void Visit(H.Expr? e)
+            {
+                switch (e)
+                {
+                    case H.AssignExpr { Target: H.FieldExpr { Instance: H.ThisExpr, Field: var assigned } } assign:
+                        Set.Add(assigned);
+                        Visit(assign.Value);
+                        return;
+                    case H.AddressOfExpr { Place: H.FieldExpr { Instance: H.ThisExpr, Field: var lent } }:
+                        Set.Add(lent);
+                        return;
+                    case H.FieldExpr { Instance: H.ThisExpr }:
+                        return; // reading a field
+                    case H.CallExpr { Receiver: H.ThisExpr } call when binder.IsConstructor(call.Method):
+                        foreach (var argument in call.Arguments)
+                            Visit(argument); // the base's or the delegated constructor
+                        return;
+                    case H.ThisExpr:
+                        Escapes = true;
+                        return;
+                }
+                base.Visit(e);
+            }
+        }
+
+        /// <summary>
+        /// The instance field initializers, as each constructor that does not delegate runs them. They belong to the type,
+        /// not to the constructor: its parameters are not in scope (a name is the field's, as in every other constructor),
+        /// and what they report is reported once (by the first such constructor; the others bind them quietly).
+        /// </summary>
+        private List<H.Stmt> FieldInitializers(H.ThisExpr self)
+        {
+            var statements = new List<H.Stmt>();
+            if (owner.InitializedFields.Count == 0)
+                return statements;
+            var hidden = new Dictionary<string, int>(parameters, StringComparer.Ordinal);
+            parameters.Clear();
+            var reporting = bag;
+            if (owner.Constructors.FirstOrDefault(c => c.Constructor?.ThisArguments is null) is { } first && first != method)
+                bag = new DiagnosticBag();
+            try
+            {
+                foreach (var field in owner.InitializedFields)
+                {
+                    var value = Convert(Expression(field.Declaration!.Initializer!, field.Type), field.Type, field.Declaration.Initializer!.Span);
+                    statements.Add(new H.ExprStmt(new H.AssignExpr(new H.FieldExpr(self, field.Token, field.Type), value, field.Type)));
+                }
+            }
+            finally
+            {
+                bag = reporting;
+                foreach (var (name, index) in hidden)
+                    parameters[name] = index;
+            }
+            return statements;
         }
 
         /// <summary>
@@ -386,6 +489,8 @@ namespace Antril.Binding
             }
             if (parameters.ContainsKey(name))
                 Error("AN2004", $"`{name}` is a parameter of this function", span);
+            if (name == "this")
+                Error("AN2153", "`this` is the object a method runs on: a variable is named otherwise", span);
             locals.Add(new H.HirLocal(name, IsError(type) ? H.HirType.I32 : type));
             int index = locals.Count - 1;
             scopes[^1][name] = index;
@@ -775,18 +880,7 @@ namespace Antril.Binding
         }
 
         /// <summary>Whether a type has a zero value (numbers, bool, null for nullable types, structs of those).</summary>
-        private bool Zeroable(H.HirType type) => type switch
-        {
-            H.PrimitiveType => true,
-            H.NullableType => true,
-            H.PointerType => true,
-            H.NativeFuncType => true,
-            H.InlineArrayType inline => Zeroable(inline.Element),
-            H.GenericParamType => true,
-            H.NamedType when binder.SymbolOf(type) is { IsEnum: true } => true,
-            H.NamedType when binder.SymbolOf(type) is { IsStruct: true } s => s.Fields.Values.Where(f => !f.IsStatic).All(f => Zeroable(f.Type)),
-            _ => false,
-        };
+        private bool Zeroable(H.HirType type) => binder.Zeroable(type);
 
         private H.Stmt Try(TryStmt t)
         {
@@ -1096,6 +1190,9 @@ namespace Antril.Binding
                 {
                     var type = Resolve(d.Type) ?? ErrorType;
                     binder.CheckDeclared(type, OwnGeneric, source, d.Type.Span);
+                    // A type that is never null has no default (it would be null).
+                    if (!IsError(type) && !Zeroable(type))
+                        return Failed("AN2151", $"a `{Show(type)}` has no default (it is never null): write a value, or use `default({Show(type)}?)`", d.Span);
                     return new H.DefaultExpr(type);
                 }
                 case SizeOfExpr s:
@@ -1130,11 +1227,16 @@ namespace Antril.Binding
             return Binder.PrimitiveNamed(suffix);
         }
 
-        /// <summary>A float literal as a constant of a float type: f32 and f64 through the double read, the others from the text exactly.</summary>
+        /// <summary>
+        /// A float literal as a constant of a float type: f64 through the double read, f32 read from the text (not from the
+        /// double, which would round twice), the others from the text exactly.
+        /// </summary>
         internal static H.FloatConstant FloatOf(FloatLiteral literal, H.Primitive kind) => kind switch
         {
             H.Primitive.F64 => H.FloatConstant.Of(literal.Value),
-            H.Primitive.F32 => H.FloatConstant.Of((float)literal.Value),
+            H.Primitive.F32 => H.FloatConstant.Of(literal.Text is null
+                ? (float)literal.Value
+                : float.Parse(LiteralDigits(literal).Replace("_", ""), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture)),
             // An exponent beyond what any format holds (`1e99999999`, which the lexer reports) is an infinity or a zero:
             // the double read says which, without raising 10 to it.
             _ when Lexer.ExponentOutOfRange(LiteralDigits(literal)) => new H.FloatConstant(SoftFloat.FromDouble(literal.Value, FloatFormat.Of(kind.Bits())), kind),
@@ -2864,7 +2966,10 @@ namespace Antril.Binding
             for (var at = bound; at is H.FieldExpr field && binder.FieldOf(field.Field) is { } fieldSymbol; at = field.Instance)
             {
                 var symbol = fieldSymbol.Owner;
-                if (symbol.Definition.Fields[fieldSymbol.Index].Flags.HasFlag(H.FieldFlags.Readonly) && !((method.IsConstructor || method.IsStaticConstructor) && method.Owner == symbol))
+                // A readonly field is set by its type's constructors, in their own code: a static one by the static
+                // constructor, an instance one by an instance constructor (not by a lambda made there, which runs later).
+                bool constructing = lambdaDepth == 0 && method.Owner == symbol && (fieldSymbol.IsStatic ? method.IsStaticConstructor : method.IsConstructor);
+                if (symbol.Definition.Fields[fieldSymbol.Index].Flags.HasFlag(H.FieldFlags.Readonly) && !constructing)
                     return ("AN2070", $"`{fieldSymbol.Name}` is readonly: only its constructors set it");
                 if (!symbol.IsStruct)
                     break; // a field of an object: the object changes, not what holds it
@@ -3685,6 +3790,17 @@ namespace Antril.Binding
                         return value;
                     if (binder.MemberSymbolOf(value.Type) is { } symbol && BoundCall(value, symbol, "ToString", []) is { } converted && converted.Type == type)
                         return converted;
+                    // A type parameter: its ToString() through what it is constrained by (as `t.ToString()`), when it has one.
+                    if (value.Type is H.GenericParamType)
+                    {
+                        var reporting = bag;
+                        bag = new DiagnosticBag();
+                        var shown = MemberCall(value, "ToString", [], span, span);
+                        bool found = !bag.HasErrors;
+                        bag = reporting;
+                        if (found && shown.Type == type)
+                            return shown;
+                    }
                     return Failed("AN2097", $"a `{Show(value.Type)}` has no `ToString()` to join to a string", span);
                 }
                 var a = AsText(left);
@@ -4310,8 +4426,11 @@ namespace Antril.Binding
                 return Failed("AN2132", $"`with` copies a record (a `record class` or `record value`), not a `{Show(value.Type)}`", w.Span);
             var arguments = value.Type is H.NamedType named ? named.Arguments : [];
             var changes = new List<H.MemberInit>();
+            var replaced = new HashSet<string>(StringComparer.Ordinal);
             foreach (var change in w.Changes)
             {
+                if (!replaced.Add(change.Name))
+                    Error("AN2152", $"`{change.Name}` is replaced twice: name it once", change.NameSpan);
                 if (record.Fields.TryGetValue(change.Name, out var field) && !field.IsStatic)
                 {
                     var fieldType = field.Type.Substitute(arguments);
@@ -4509,10 +4628,31 @@ namespace Antril.Binding
             var members = new List<H.PropertySubpattern>();
             foreach (var m in property.Members)
             {
-                if (symbol is not null && symbol.Fields.TryGetValue(m.Name, out var field) && !field.IsStatic)
-                    members.Add(new H.PropertySubpattern(field.Token, Pattern(m.Pattern, field.Type.Substitute(arguments)), H.MemberKind.Field));
-                else if (symbol is not null && symbol.Properties.TryGetValue(m.Name, out var prop) && !prop.IsStatic && prop.Getter is not null)
-                    members.Add(new H.PropertySubpattern(prop.Token, Pattern(m.Pattern, prop.Type.Substitute(arguments)), H.MemberKind.Property));
+                // The type's own members, then its bases' (with the type arguments the subject gives them), as `x.Name` finds them.
+                FieldSymbol? field = null;
+                PropertySymbol? prop = null;
+                H.HirType[] seen = arguments;
+                if (symbol is not null)
+                    foreach (var (t, chained) in symbol.Chain())
+                    {
+                        seen = t == symbol ? arguments : [.. chained.Select(a => a.Substitute(arguments))];
+                        if (t.Fields.TryGetValue(m.Name, out var f) && !f.IsStatic)
+                            field = f;
+                        else if (t.Properties.TryGetValue(m.Name, out var p) && !p.IsStatic && p.Getter is not null)
+                            prop = p;
+                        if (field is not null || prop is not null)
+                            break;
+                    }
+                if (field is not null)
+                {
+                    Allowed(field, m.NameSpan);
+                    members.Add(new H.PropertySubpattern(field.Token, Pattern(m.Pattern, field.Type.Substitute(seen)), H.MemberKind.Field));
+                }
+                else if (prop is not null)
+                {
+                    Allowed(prop, write: false, m.NameSpan);
+                    members.Add(new H.PropertySubpattern(prop.Token, Pattern(m.Pattern, prop.Type.Substitute(seen)), H.MemberKind.Property));
+                }
                 else
                 {
                     if (!IsError(subject))
