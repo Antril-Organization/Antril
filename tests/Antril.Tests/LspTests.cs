@@ -11,7 +11,7 @@ namespace Antril.Tests;
 public sealed class QueenProject
 {
     public string Root { get; } = TestEnvironment.TempFolder("queen-lsp");
-    public string QueenPath => Path.Combine(Root, "app", "App.queen");
+    public string QueenPath => Path.Combine(Root, "app", "project.queen");
     public string MainPath => Path.Combine(Root, "app", "main.ant");
     public const string Queen = "queen 1.0;\nchunk PROJ:\n   name: App\nchunk BUILD:\n   backend: x64,\n   optimization: 1,\n   output: out/App.exe\nchunk DEPS:\n   assembly: ../Geo.dll\n";
     public const string Main = "import System;\nimport Geo;\n\nMain()\n{\n    Console.WriteLine(Shapes.Area(6, 7));\n}\n";

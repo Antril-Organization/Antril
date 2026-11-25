@@ -96,7 +96,7 @@ public sealed class NestTests : CheckedTest
             return;
         Directory.CreateDirectory(Path.Combine(root, "native"));
         File.Copy(sqlite, Path.Combine(root, "native", "sqlite3.dll"));
-        string queen = Path.Combine(root, "Query.queen");
+        string queen = Path.Combine(root, "project.queen");
         File.WriteAllText(queen, $"queen 1.0;\n\nchunk PROJ:\n   name: Query\n\nchunk DEPS:\n   assembly: \"{nestDll.Replace('\\', '/')}\",\n   lib: native/sqlite3.dll\n");
         File.WriteAllText(Path.Combine(root, "Main.ant"), """
             import System;
@@ -183,7 +183,7 @@ public sealed class NestTests : CheckedTest
         var (libCode, libText) = LarvaCommand.Run(["lib", "-o", nestDll, .. Directory.GetFiles(Path.Combine(NestRepository, "src"), "*.ant")]);
         Check("Nest.dll compiles", libCode == 0, libText.Trim());
         string tool = Path.Combine(root, "tool", "nest.exe");
-        var (toolCode, toolText) = LarvaCommand.Run("build", "--backend", "x64", "-o", tool, Path.Combine(NestRepository, "tool", "Nest.Tool.queen"));
+        var (toolCode, toolText) = LarvaCommand.Run("build", "--backend", "x64", "-o", tool, Path.Combine(NestRepository, "tool", "project.queen"));
         Check("the tool builds", toolCode == 0, toolText.Trim());
         if (libCode != 0 || toolCode != 0)
             return;
@@ -192,7 +192,7 @@ public sealed class NestTests : CheckedTest
         Directory.CreateDirectory(Path.Combine(shop, "native"));
         Directory.CreateDirectory(Path.Combine(shop, "src"));
         File.Copy(sqlite, Path.Combine(shop, "native", "sqlite3.dll"));
-        string queen = Path.Combine(shop, "Shop.queen");
+        string queen = Path.Combine(shop, "project.queen");
         File.WriteAllText(queen, $"queen 1.0;\n\nchunk PROJ:\n   name: Shop\n\nchunk DEPS:\n   assembly: \"{nestDll.Replace('\\', '/')}\",\n   lib: native/sqlite3.dll\n");
         File.WriteAllText(Path.Combine(shop, "src", "Data.ant"), Data);
         File.WriteAllText(Path.Combine(shop, "src", "Main.ant"), Main);

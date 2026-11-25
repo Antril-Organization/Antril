@@ -44,7 +44,7 @@ public sealed class HiveTests : CheckedTest
                 return 0;
             }
             """);
-        File.WriteAllText(Path.Combine(folder, "P.queen"), """
+        File.WriteAllText(Path.Combine(folder, "project.queen"), """
             queen 1.0;
 
             chunk PROJ:
@@ -56,7 +56,7 @@ public sealed class HiveTests : CheckedTest
                raw: data/raw.bin
             """);
         string exe = Path.Combine(folder, "p.exe");
-        var (code, text) = Larva("build", "-o", exe, "--backend", "x64", Path.Combine(folder, "P.queen"));
+        var (code, text) = Larva("build", "-o", exe, "--backend", "x64", Path.Combine(folder, "project.queen"));
         Check("larva build P.queen (x64) succeeds", code == 0 && File.Exists(exe), text.Trim());
         if (code != 0)
             return;

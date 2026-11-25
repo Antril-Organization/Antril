@@ -756,17 +756,17 @@ public sealed unsafe class BindingsTests : CheckedTest
         File.Copy(Path.Combine(folder, "K32.ant"), Path.Combine(kept, "K32.ant"));
         foreach (string file in Directory.Exists(Path.Combine(folder, "k32")) ? Directory.GetFiles(Path.Combine(folder, "k32")) : [])
             File.Copy(file, Path.Combine(kept, "bindings", Path.GetFileName(file)));
-        File.WriteAllText(Path.Combine(kept, "Kept.queen"), "queen 1.0;\nchunk PROJ:\n   name: Kept\n");
+        File.WriteAllText(Path.Combine(kept, "project.queen"), "queen 1.0;\nchunk PROJ:\n   name: Kept\n");
         File.WriteAllText(Path.Combine(kept, "main.ant"), "import System;\nimport Win;\nMain() { Console.WriteLine(Kernel.CurrentProcessId() > 0u32); }\n");
-        var (keptCode, keptText) = Larva("build", "--check", Path.Combine(kept, "Kept.queen"));
+        var (keptCode, keptText) = Larva("build", "--check", Path.Combine(kept, "project.queen"));
         Check("a project with its binding profile among its sources builds (System.Bindings comes with it)", keptCode == 0, keptText.Trim());
 
         // DEPS `lib:` and FILES `copy:` land next to the build.
         Directory.CreateDirectory(Path.Combine(kept, "native"));
         File.WriteAllText(Path.Combine(kept, "native", "Fake.dll"), "not a real library");
         File.WriteAllText(Path.Combine(kept, "data.txt"), "data");
-        File.WriteAllText(Path.Combine(kept, "Kept.queen"), "queen 1.0;\nchunk PROJ:\n   name: Kept\nchunk BUILD:\n   backend: x64\nchunk DEPS:\n   lib: native/Fake.dll\nchunk FILES:\n   copy: data.txt,\n   into: assets\n");
-        var (copyCode, copyText) = Larva("build", Path.Combine(kept, "Kept.queen"));
+        File.WriteAllText(Path.Combine(kept, "project.queen"), "queen 1.0;\nchunk PROJ:\n   name: Kept\nchunk BUILD:\n   backend: x64\nchunk DEPS:\n   lib: native/Fake.dll\nchunk FILES:\n   copy: data.txt,\n   into: assets\n");
+        var (copyCode, copyText) = Larva("build", Path.Combine(kept, "project.queen"));
         Check("larva build copies the project's native libraries (`lib:`) and FILES next to the program",
             copyCode == 0 && File.Exists(Path.Combine(kept, "bin", "Fake.dll")) && File.Exists(Path.Combine(kept, "bin", "assets", "data.txt")), copyText.Trim());
 
@@ -774,17 +774,17 @@ public sealed unsafe class BindingsTests : CheckedTest
         // published to a folder registry, installed by another project and built against.
         string package = Path.Combine(folder, "package");
         Directory.CreateDirectory(package);
-        File.WriteAllText(Path.Combine(package, "Win.queen"), "queen 1.0;\nchunk PROJ:\n   name: Win,\n   type: library,\n   version: v1.2.0,\n   author: Tests\nchunk SOURCES:\n   scan: false\nchunk DEPS:\n   assembly: ../KernelBindings.dll,\n   lib: ../kept/native/Fake.dll\nchunk HIVE:\n   package: Tests/Win,\n   sign: test.key,\n   provider: file:../registry\n");
+        File.WriteAllText(Path.Combine(package, "project.queen"), "queen 1.0;\nchunk PROJ:\n   name: Win,\n   type: library,\n   version: v1.2.0,\n   author: Tests\nchunk SOURCES:\n   scan: false\nchunk DEPS:\n   assembly: ../KernelBindings.dll,\n   lib: ../kept/native/Fake.dll\nchunk HIVE:\n   package: Tests/Win,\n   sign: test.key,\n   provider: file:../registry\n");
         var (keyMade, keyMadeText) = Larva("hive", "key", "-o", Path.Combine(package, "test.key"));
-        var (published, publishText) = Larva("hive", "publish", Path.Combine(package, "Win.queen"));
+        var (published, publishText) = Larva("hive", "publish", Path.Combine(package, "project.queen"));
         Check("larva hive publish packs a compiled library (its `assembly:` and `lib:`), signed, into a folder registry",
             keyMade == 0 && published == 0 && File.Exists(Path.Combine(folder, "registry", "Tests", "Win", "index.json")), keyMadeText + publishText);
         string consumer = Path.Combine(folder, "user");
         Directory.CreateDirectory(consumer);
-        File.WriteAllText(Path.Combine(consumer, "User.queen"), $"queen 1.0;\nchunk PROJ:\n   name: User\nchunk BUILD:\n   backend: x64\nchunk HIVE:\n   provider: \"file:{Path.Combine(folder, "registry").Replace('\\', '/')}\",\n   cache: .hive\n");
+        File.WriteAllText(Path.Combine(consumer, "project.queen"), $"queen 1.0;\nchunk PROJ:\n   name: User\nchunk BUILD:\n   backend: x64\nchunk HIVE:\n   provider: \"file:{Path.Combine(folder, "registry").Replace('\\', '/')}\",\n   cache: .hive\n");
         File.WriteAllText(Path.Combine(consumer, "main.ant"), "import System;\nimport Win;\nMain() { Console.WriteLine(Kernel.CurrentProcessId() > 0u32); }\n");
-        var (added, addText) = Larva("hive", "add", "Tests/Win@^1.2", Path.Combine(consumer, "User.queen"));
-        var (usedCode, usedText) = Larva("build", Path.Combine(consumer, "User.queen"));
+        var (added, addText) = Larva("hive", "add", "Tests/Win@^1.2", Path.Combine(consumer, "project.queen"));
+        var (usedCode, usedText) = Larva("build", Path.Combine(consumer, "project.queen"));
         Check("…another project adds it (larva hive add), and larva build compiles against it and copies its native library",
             added == 0 && usedCode == 0 && File.Exists(Path.Combine(consumer, "bin", "Fake.dll")), addText + usedText);
     }
@@ -1003,14 +1003,14 @@ public sealed unsafe class BindingsTests : CheckedTest
         string queenFolder = Path.Combine(root, "qapp");
         Directory.CreateDirectory(queenFolder);
         File.Copy(Path.Combine(root, "main2.ant"), Path.Combine(queenFolder, "main.ant"), overwrite: true);
-        File.WriteAllText(Path.Combine(queenFolder, "qapp.queen"), "queen 1.0;\nchunk PROJ:\n   name: qapp\nchunk DEPS:\n   assembly: ../K32.dll\n");
+        File.WriteAllText(Path.Combine(queenFolder, "project.queen"), "queen 1.0;\nchunk PROJ:\n   name: qapp\nchunk DEPS:\n   assembly: ../K32.dll\n");
         string exe3 = Path.Combine(root, "app3.exe");
-        var (code3, text3) = Larva("build", "-o", exe3, "--backend", "llvm", Path.Combine(queenFolder, "qapp.queen"));
+        var (code3, text3) = Larva("build", "-o", exe3, "--backend", "llvm", Path.Combine(queenFolder, "project.queen"));
         Check("a .queen names the bindings library (.dll) as `assembly:` in DEPS", code3 == 0 && File.Exists(exe3), text3.Trim());
         if (code3 == 0)
             Check("…and the program runs (LLVM) → 711", Output(exe3) == "711", Output(exe3));
-        File.WriteAllText(Path.Combine(queenFolder, "qapp.queen"), "queen 1.0;\nchunk PROJ:\n   name: qapp\nchunk DEPS:\n   assembly: ../Missing.dll\n");
-        var (code4, text4) = Larva("build", "-o", exe3, Path.Combine(queenFolder, "qapp.queen"));
+        File.WriteAllText(Path.Combine(queenFolder, "project.queen"), "queen 1.0;\nchunk PROJ:\n   name: qapp\nchunk DEPS:\n   assembly: ../Missing.dll\n");
+        var (code4, text4) = Larva("build", "-o", exe3, Path.Combine(queenFolder, "project.queen"));
         Check("a missing library is an error naming it", code4 != 0 && text4.Contains("QN108") && text4.Contains("Missing.dll"), text4.Trim());
     }
 
