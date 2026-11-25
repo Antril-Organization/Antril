@@ -153,7 +153,7 @@ public sealed class EntryTests : CheckedTest
                gc.collector: {collector},
                unsafe: allow
             """;
-        File.WriteAllText(Path.Combine(root, "Collected.queen"), Project("T.Counter"));
+        File.WriteAllText(Path.Combine(root, "project.queen"), Project("T.Counter"));
         var (code, log) = LarvaCommand.Run(NoEnvironment, root, "build");
         Check("a gc: custom project builds", code == 0, log.Trim());
         var (exit, output) = Start(Path.Combine(root, "bin", "Collected.exe"));
@@ -166,7 +166,7 @@ public sealed class EntryTests : CheckedTest
             ("T.Missing", "no class `T.Missing`"),
         })
         {
-            File.WriteAllText(Path.Combine(root, "Collected.queen"), Project(collector));
+            File.WriteAllText(Path.Combine(root, "project.queen"), Project(collector));
             (code, log) = LarvaCommand.Run(NoEnvironment, root, "build");
             Check($"gc.collector: {collector} is an error that says why", code != 0 && log.Contains(message), log.Trim());
         }

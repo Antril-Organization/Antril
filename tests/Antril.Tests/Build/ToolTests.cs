@@ -23,7 +23,7 @@ public sealed class ToolTests : CheckedTest
 
         var (keyCode, keyText) = Larva(tool, "hive", "key", "-o", "hive.key");
         Check("a signing key", keyCode == 0, keyText.Trim());
-        File.WriteAllText(Path.Combine(tool, "Greet.queen"), """
+        File.WriteAllText(Path.Combine(tool, "project.queen"), """
             queen 1.0;
 
             chunk PROJ:
@@ -54,20 +54,20 @@ public sealed class ToolTests : CheckedTest
         var (publishCode, publishText) = Larva(tool, "hive", "publish");
         Check("larva hive publish packs a `type: tool` project", publishCode == 0 && publishText.Contains("published Test/Greet 1.2"), publishText.Trim());
 
-        File.WriteAllText(Path.Combine(app, "App.queen"), "queen 1.0;\n\nchunk PROJ:\n   name: App\n\nchunk HIVE:\n   provider: ../registry\n");
+        File.WriteAllText(Path.Combine(app, "project.queen"), "queen 1.0;\n\nchunk PROJ:\n   name: App\n\nchunk HIVE:\n   provider: ../registry\n");
         var (installCode, installText) = Larva(app, "tool", "install", "Test/Greet");
-        string queen = File.ReadAllText(Path.Combine(app, "App.queen"));
+        string queen = File.ReadAllText(Path.Combine(app, "project.queen"));
         Check("larva tool install (in a project): built, and written to TOOLS with its version", installCode == 0 && queen.Contains("chunk TOOLS:") && queen.Contains("tool: Test/Greet@^1.2"),
             installText.Trim() + "\n" + queen);
         Check("it is pinned in hive.lock", File.ReadAllText(Path.Combine(app, "hive.lock")).Contains("Test/Greet"));
 
         var (runCode, runText) = Larva(app, "greet", "one", "two words");
-        Check("larva greet: the tool runs with its arguments as text, told the project", runCode == 2 && runText.Contains("greet [one][two words]") && runText.Contains("App.queen"), $"exit {runCode}: {runText.Trim()}");
+        Check("larva greet: the tool runs with its arguments as text, told the project", runCode == 2 && runText.Contains("greet [one][two words]") && runText.Contains("project.queen"), $"exit {runCode}: {runText.Trim()}");
         var (listCode, listText) = Larva(app, "tool", "list");
         Check("larva tool list names it", listCode == 0 && listText.Contains("larva greet") && listText.Contains("Test/Greet 1.2"), listText.Trim());
 
         var (uninstallCode, uninstallText) = Larva(app, "tool", "uninstall", "greet");
-        Check("larva tool uninstall takes it out of TOOLS", uninstallCode == 0 && !File.ReadAllText(Path.Combine(app, "App.queen")).Contains("TOOLS"), uninstallText.Trim());
+        Check("larva tool uninstall takes it out of TOOLS", uninstallCode == 0 && !File.ReadAllText(Path.Combine(app, "project.queen")).Contains("TOOLS"), uninstallText.Trim());
         var (goneCode, goneText) = Larva(app, "greet");
         Check("then `larva greet` is not a command (larva's usage)", goneCode == 2 && goneText.Contains("usage: larva"), goneText.Trim());
 

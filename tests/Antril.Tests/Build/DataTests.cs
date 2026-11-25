@@ -71,12 +71,12 @@ public sealed class DataTests : CheckedTest
         Directory.CreateDirectory(Path.Combine(folder, "native"));
         File.Copy(sqlite, Path.Combine(folder, "native", "sqlite3.dll"), overwrite: true);
         File.WriteAllText(Path.Combine(folder, "Main.ant"), Program);
-        File.WriteAllText(Path.Combine(folder, "Data.queen"), "queen 1.0;\n\nchunk PROJ:\n   name: Data\n\nchunk DEPS:\n   lib: native/sqlite3.dll\n");
+        File.WriteAllText(Path.Combine(folder, "project.queen"), "queen 1.0;\n\nchunk PROJ:\n   name: Data\n\nchunk DEPS:\n   lib: native/sqlite3.dll\n");
         foreach (string backend in new[] { "llvm", "x64" })
         {
             string output = Path.Combine(folder, "bin", backend, "Data.exe");
             Directory.CreateDirectory(Path.GetDirectoryName(output)!);
-            var (code, text) = LarvaCommand.Run(new Dictionary<string, string>(), folder, "build", "--backend", backend, "-o", output, Path.Combine(folder, "Data.queen"));
+            var (code, text) = LarvaCommand.Run(new Dictionary<string, string>(), folder, "build", "--backend", backend, "-o", output, Path.Combine(folder, "project.queen"));
             Check($"{backend}: the program builds, sqlite3.dll next to it", code == 0 && File.Exists(Path.Combine(folder, "bin", backend, "sqlite3.dll")), text.Trim());
             if (code != 0)
                 continue;

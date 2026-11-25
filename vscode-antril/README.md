@@ -2,11 +2,11 @@
 
 The [Antril](https://claude.ai/artifact/Lx8F2U4rRx58X3YP4CrAis) language (`.ant`) in VS Code: its syntax highlighting, snippets, file icon and semantic colors.
 
-Antril is compiled by Larva. This extension installs the **Larva** extension with it, which brings the rest: its language server (`larva lsp`, through Antril's Larva language pack) reports errors as you type and gives completion, hover, go to definition, signature help and the outline. Its commands create, run, check and build Antril projects (`.queen`) and bind native libraries into Antril.
+Antril is compiled by Larva. This extension installs the **Larva** extension with it, which brings the rest: its language server (`larva lsp`, through Antril's Larva language pack) reports errors as you type and gives completion, hover, go to definition, signature help and the outline. Its commands create, run, check and build Antril projects (`project.queen`) and bind native libraries into Antril.
 
 ## Features
 
-- **Syntax highlighting** for `.ant` files, and for the Antril expressions in a `.queen` project (`$[…]`).
+- **Syntax highlighting** for `.ant` files, and for the Antril expressions in a project's `project.queen` (`$[…]`).
 - **Semantic colors**: types from the standard library, static methods, enum members, fields, constants, exceptions, attributes and flag enums, each with its own color.
 - **Snippets** for Antril's declarations and statements.
 - **File icon**: the ant.

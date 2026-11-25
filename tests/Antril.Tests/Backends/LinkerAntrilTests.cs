@@ -155,7 +155,7 @@ public sealed unsafe class LinkerAntrilTests : CheckedTest
         Directory.CreateDirectory(Path.Combine(root, "lib"));
         Directory.CreateDirectory(Path.Combine(root, "app"));
         File.WriteAllText(Path.Combine(root, "lib", "Lib.ant"), LibSource);
-        File.WriteAllText(Path.Combine(root, "lib", "Lib.queen"), """
+        File.WriteAllText(Path.Combine(root, "lib", "project.queen"), """
             queen 1.0;
 
             chunk PROJ:
@@ -186,7 +186,7 @@ public sealed unsafe class LinkerAntrilTests : CheckedTest
                 return 0;
             }
             """);
-        File.WriteAllText(Path.Combine(root, "bad", "Bad.queen"), """
+        File.WriteAllText(Path.Combine(root, "bad", "project.queen"), """
             queen 1.0;
 
             chunk PROJ:
@@ -194,11 +194,11 @@ public sealed unsafe class LinkerAntrilTests : CheckedTest
                type: exe
 
             chunk DEPS:
-               proj: ../lib/Lib.queen
+               proj: ../lib
             """);
-        var (badCode, badText) = Larva("build", "-o", Path.Combine(root, "bad", "bad.exe"), "--backend", "x64", Path.Combine(root, "bad", "Bad.queen"));
+        var (badCode, badText) = Larva("build", "-o", Path.Combine(root, "bad", "bad.exe"), "--backend", "x64", Path.Combine(root, "bad", "project.queen"));
         Check("a string cannot cross from the library's domain: the frontend says where (AN1079) and the build explains it", badCode != 0 && badText.Contains("AN1079") && badText.Contains("cannot cross") && badText.Contains("System.Exchange"), badText.Trim());
-        File.WriteAllText(Path.Combine(root, "app", "App.queen"), """
+        File.WriteAllText(Path.Combine(root, "app", "project.queen"), """
             queen 1.0;
 
             chunk PROJ:
@@ -206,12 +206,12 @@ public sealed unsafe class LinkerAntrilTests : CheckedTest
                type: exe
 
             chunk DEPS:
-               proj: ../lib/Lib.queen
+               proj: ../lib
             """);
         foreach (string backend in new[] { "x64", "llvm" })
         {
             string exe = Path.Combine(root, "app", $"app-{backend}.exe");
-            var (code, text) = Larva("build", "-o", exe, "--backend", backend, Path.Combine(root, "app", "App.queen"));
+            var (code, text) = Larva("build", "-o", exe, "--backend", backend, Path.Combine(root, "app", "project.queen"));
             Check($"larva build App.queen ({backend}) links the RefCount library as its own domain", code == 0 && File.Exists(exe), text.Trim());
             if (code != 0)
                 continue;
@@ -264,7 +264,7 @@ public sealed unsafe class LinkerAntrilTests : CheckedTest
                 return 0;
             }
             """);
-        File.WriteAllText(Path.Combine(root, "Trees.queen"), """
+        File.WriteAllText(Path.Combine(root, "project.queen"), """
             queen 1.0;
 
             chunk PROJ:
@@ -281,7 +281,7 @@ public sealed unsafe class LinkerAntrilTests : CheckedTest
             foreach (string backend in new[] { "llvm", "x64" })
             {
                 string exe = Path.Combine(root, $"trees-{backend}.exe");
-                var (code, text) = Larva("build", "-o", exe, "--backend", backend, Path.Combine(root, "Trees.queen"));
+                var (code, text) = Larva("build", "-o", exe, "--backend", backend, Path.Combine(root, "project.queen"));
                 Check($"larva build Trees.queen ({backend}, gc: refcount)", code == 0 && File.Exists(exe), text.Trim());
                 if (code != 0)
                     continue;
@@ -356,7 +356,7 @@ public sealed unsafe class LinkerAntrilTests : CheckedTest
                 return 0;
             }
             """);
-        File.WriteAllText(Path.Combine(root, "Copy.queen"), """
+        File.WriteAllText(Path.Combine(root, "project.queen"), """
             queen 1.0;
 
             chunk PROJ:
@@ -368,7 +368,7 @@ public sealed unsafe class LinkerAntrilTests : CheckedTest
         try
         {
             string exe = Path.Combine(root, "copy.exe");
-            var (code, text) = Larva("build", "-o", exe, "--backend", "llvm", Path.Combine(root, "Copy.queen"));
+            var (code, text) = Larva("build", "-o", exe, "--backend", "llvm", Path.Combine(root, "project.queen"));
             Check("larva build Copy.queen (tracing, diagnostics)", code == 0 && File.Exists(exe), text.Trim());
             if (code != 0)
                 return;
@@ -465,7 +465,7 @@ public sealed unsafe class LinkerAntrilTests : CheckedTest
                 return 0;
             }
             """);
-        File.WriteAllText(Path.Combine(root, "Throws.queen"), """
+        File.WriteAllText(Path.Combine(root, "project.queen"), """
             queen 1.0;
 
             chunk PROJ:
@@ -475,7 +475,7 @@ public sealed unsafe class LinkerAntrilTests : CheckedTest
         foreach (string backend in new[] { "llvm", "x64" })
         {
             string exe = Path.Combine(root, $"throws-{backend}.exe");
-            var (code, text) = Larva("build", "-o", exe, "--backend", backend, Path.Combine(root, "Throws.queen"));
+            var (code, text) = Larva("build", "-o", exe, "--backend", backend, Path.Combine(root, "project.queen"));
             Check($"larva build Throws.queen ({backend})", code == 0 && File.Exists(exe), text.Trim());
             if (code != 0)
                 continue;

@@ -128,15 +128,15 @@ public sealed class LanguagePackTests : CheckedTest
         string demo = Path.Combine(projects, "Demo");
         string program = Path.Combine(demo, "Program.ant");
         Check("larva new console-app Demo writes the project (its .queen and the program in Antril)",
-            newCode == 0 && File.Exists(Path.Combine(demo, "Demo.queen")) && File.Exists(program), newText.Trim());
+            newCode == 0 && File.Exists(Path.Combine(demo, "project.queen")) && File.Exists(program), newText.Trim());
         string source = File.Exists(program) ? File.ReadAllText(program) : "";
         Check("the template's namespace is the project's, written by Antril's view (not marked as decompiled)",
             source.Contains("into namespace Demo") && source.Contains("Main()") && !source.Contains("decompiled"), source);
-        string queen = File.Exists(Path.Combine(demo, "Demo.queen")) ? File.ReadAllText(Path.Combine(demo, "Demo.queen")) : "";
+        string queen = File.Exists(Path.Combine(demo, "project.queen")) ? File.ReadAllText(Path.Combine(demo, "project.queen")) : "";
         Check("the .queen names the project and its type", queen.Contains("name: Demo") && queen.Contains("type: exe"), queen);
         var (again, againText) = LarvaIn(null, projects, "new", "console-app", "Demo");
         Check("larva new does not write over a project (without --force)", again == 1 && againText.Contains("exists"), againText.Trim());
-        var (buildCode, buildText) = LarvaIn(null, demo, "build", "Demo.queen", "--backend", "x64");
+        var (buildCode, buildText) = LarvaIn(null, demo, "build", "project.queen", "--backend", "x64");
         string exe = Path.Combine(demo, "bin", "Demo.exe");
         string run = File.Exists(exe) ? RunExe(exe) : "";
         Check("the new project builds and runs", buildCode == 0 && run.Contains("Hello from Larva!"), buildText.Trim() + run);
@@ -167,7 +167,7 @@ public sealed class LanguagePackTests : CheckedTest
         string greeter = Path.Combine(projects, "Greetings", "Greeter.ant");
         Check("the Library template puts its class in the file its manifest names",
             libraryCode == 0 && File.Exists(greeter) && File.ReadAllText(greeter).Contains("into namespace Greetings") && File.ReadAllText(greeter).Contains("class Greeter"), libraryText.Trim());
-        var (libraryBuild, libraryBuildText) = LarvaIn(null, Path.Combine(projects, "Greetings"), "build", "--check", "Greetings.queen");
+        var (libraryBuild, libraryBuildText) = LarvaIn(null, Path.Combine(projects, "Greetings"), "build", "--check", "project.queen");
         Check("and it compiles", libraryBuild == 0, libraryBuildText.Trim());
         var (runLibrary, runLibraryText) = LarvaIn(null, Path.Combine(projects, "Greetings"), "run");
         Check("larva run on a library says there is nothing to run", runLibrary == 1 && runLibraryText.Contains("is a library"), runLibraryText.Trim());
@@ -222,7 +222,7 @@ public sealed class LanguagePackTests : CheckedTest
         Check("larva config hive.provider sets this machine's package registry, and refuses one with spaces",
             hiveSet == 0 && hiveGet == 0 && hiveGetText.Trim() == "https://www.antril.org/hive-api" && hiveBad == 1, hiveSetText + hiveGetText + hiveBadText);
         var (newCode, newText) = LarvaIn(environment, projects, "new", "console-app", "Configured");
-        string queen = Path.Combine(projects, "Configured", "Configured.queen");
+        string queen = Path.Combine(projects, "Configured", "project.queen");
         string text = File.Exists(queen) ? File.ReadAllText(queen) : "";
         Check("larva new writes a BUILD chunk with the defaults in effect (the borrow checker off, the optimization set)",
             newCode == 0 && text.Contains("chunk BUILD:") && text.Contains("borrowcheck: off") && text.Contains("optimization: 1") && text.Contains("backend: llvm") && !text.Contains("hive.provider"), newText + text);
@@ -275,9 +275,9 @@ public sealed class LanguagePackTests : CheckedTest
         string safeRoot = Path.Combine(projects, "Safe");
         Directory.CreateDirectory(Path.Combine(safeRoot, "app"));
         Directory.CreateDirectory(Path.Combine(safeRoot, "raw"));
-        File.WriteAllText(Path.Combine(safeRoot, "raw", "Raw.queen"), "queen 1.0;\nchunk PROJ:\n   name: Raw,\n   type: library\n");
+        File.WriteAllText(Path.Combine(safeRoot, "raw", "project.queen"), "queen 1.0;\nchunk PROJ:\n   name: Raw,\n   type: library\n");
         File.WriteAllText(Path.Combine(safeRoot, "raw", "raw.ant"), "into namespace Raw { public unsafe Peek(i32 v) : i32 { i32* p = &v; return *p; } }\n");
-        string safeQueen = Path.Combine(safeRoot, "app", "App.queen");
+        string safeQueen = Path.Combine(safeRoot, "app", "project.queen");
         File.WriteAllText(safeQueen, "queen 1.0;\nchunk PROJ:\n   name: App\nchunk BUILD:\n   unsafe: deny\nchunk DEPS:\n   proj: ../raw\n");
         File.WriteAllText(Path.Combine(safeRoot, "app", "main.ant"), "import System;\nimport Raw;\nMain() { Console.WriteLine(Peek(5)); }\n");
         var (safeCode, safeText) = LarvaIn(environment, Path.Combine(safeRoot, "app"), "build", "--check");
@@ -294,7 +294,7 @@ public sealed class LanguagePackTests : CheckedTest
         var (environment, projects) = Defaults();
         string fileProject = Path.Combine(projects, "FileAccess");
         Directory.CreateDirectory(fileProject);
-        File.WriteAllText(Path.Combine(fileProject, "FileAccess.queen"), "queen 1.0;\n\nchunk PROJ:\n   name: FileAccess,\n   type: exe,\n   version: v1.0\n\nchunk BUILD:\n   access.default: file\n");
+        File.WriteAllText(Path.Combine(fileProject, "project.queen"), "queen 1.0;\n\nchunk PROJ:\n   name: FileAccess,\n   type: exe,\n   version: v1.0\n\nchunk BUILD:\n   access.default: file\n");
         File.WriteAllText(Path.Combine(fileProject, "One.ant"), "class Hidden { static F() : i32 => 1; }\n");
         File.WriteAllText(Path.Combine(fileProject, "Two.ant"), "import System;\nMain()\n{\n    Console.WriteLine(Hidden.F());\n}\n");
         var (fileCode, fileText) = LarvaIn(environment, fileProject, "build", "--check");
@@ -308,7 +308,7 @@ public sealed class LanguagePackTests : CheckedTest
         var (environment, projects) = Defaults();
         string cpuProject = Path.Combine(projects, "Cpu");
         Directory.CreateDirectory(cpuProject);
-        File.WriteAllText(Path.Combine(cpuProject, "Cpu.queen"), "queen 1.0;\n\nchunk PROJ:\n   name: Cpu,\n   type: exe,\n   version: v1.0\n\nchunk BUILD:\n   backend: llvm,\n   cpu: native\n");
+        File.WriteAllText(Path.Combine(cpuProject, "project.queen"), "queen 1.0;\n\nchunk PROJ:\n   name: Cpu,\n   type: exe,\n   version: v1.0\n\nchunk BUILD:\n   backend: llvm,\n   cpu: native\n");
         File.WriteAllText(Path.Combine(cpuProject, "Main.ant"),
             "import System;\nMain()\n{\n    u64 sum = 0;\n    loop (u32 i in 0..1000000)\n        if ((i & 1) == 0) sum += i;\n    Console.WriteLine(sum);\n}\n");
         var (nativeCode, nativeText) = LarvaIn(environment, cpuProject, "run");
