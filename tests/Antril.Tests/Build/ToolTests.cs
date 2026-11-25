@@ -51,6 +51,15 @@ public sealed class ToolTests : CheckedTest
                 return words.Count;
             }
             """);
+        // The tool brings a queen profile: `greet.queen` files are read with it where the tool is installed.
+        Directory.CreateDirectory(Path.Combine(tool, "profiles", "greet"));
+        File.WriteAllText(Path.Combine(tool, "profiles", "greet", "template.tqueen"), """
+            tqueen 1.0;
+            profile greet: "Greet's settings"
+            chunk GREET:
+               word: IDENTIFIER = hello
+               times: INT(1..3) = 1
+            """);
         var (publishCode, publishText) = Larva(tool, "hive", "publish");
         Check("larva hive publish packs a `type: tool` project", publishCode == 0 && publishText.Contains("published Test/Greet 1.2"), publishText.Trim());
 
@@ -61,6 +70,13 @@ public sealed class ToolTests : CheckedTest
             installText.Trim() + "\n" + queen);
         Check("it is pinned in hive.lock", File.ReadAllText(Path.Combine(app, "hive.lock")).Contains("Test/Greet"));
 
+        File.WriteAllText(Path.Combine(app, "greet.queen"), "queen 1.0;\n\nchunk GREET:\n   times: 2\n");
+        var (readCode, readText) = Larva(app, "queen", "read", "greet.queen");
+        Check("larva queen read: greet.queen with the profile the installed tool brings (its value, and the default)",
+            readCode == 0 && readText.Contains("\"profile\": \"greet\"") && readText.Contains("\"times\": \"2\"") && readText.Contains("\"word\": \"hello\""), readText.Trim());
+        File.WriteAllText(Path.Combine(app, "greet.queen"), "queen 1.0;\n\nchunk GREET:\n   times: 7\n");
+        var (badCode, badText) = Larva(app, "queen", "read", "greet.queen");
+        Check("…and its errors: QN124 (exit 1)", badCode == 1 && badText.Contains("QN124"), badText.Trim());
         var (runCode, runText) = Larva(app, "greet", "one", "two words");
         Check("larva greet: the tool runs with its arguments as text, told the project", runCode == 2 && runText.Contains("greet [one][two words]") && runText.Contains("project.queen"), $"exit {runCode}: {runText.Trim()}");
         var (listCode, listText) = Larva(app, "tool", "list");
@@ -68,6 +84,8 @@ public sealed class ToolTests : CheckedTest
 
         var (uninstallCode, uninstallText) = Larva(app, "tool", "uninstall", "greet");
         Check("larva tool uninstall takes it out of TOOLS", uninstallCode == 0 && !File.ReadAllText(Path.Combine(app, "project.queen")).Contains("TOOLS"), uninstallText.Trim());
+        var (noProfileCode, noProfileText) = Larva(app, "queen", "read", "greet.queen");
+        Check("uninstalled, its profile goes with it: QN140", noProfileCode == 1 && noProfileText.Contains("QN140"), noProfileText.Trim());
         var (goneCode, goneText) = Larva(app, "greet");
         Check("then `larva greet` is not a command (larva's usage)", goneCode == 2 && goneText.Contains("usage: larva"), goneText.Trim());
 
@@ -75,6 +93,9 @@ public sealed class ToolTests : CheckedTest
         Larva(root, "config", "hive.provider", registry);
         var (globalCode, globalText) = Larva(root, "tool", "install", "Test/Greet", "-g");
         Check("larva tool install -g", globalCode == 0, globalText.Trim());
+        File.WriteAllText(Path.Combine(root, "elsewhere", "greet.queen"), "queen 1.0;\n\nchunk GREET:\n   word: hi\n");
+        var (userReadCode, userReadText) = Larva(Path.Combine(root, "elsewhere"), "queen", "read", "greet.queen");
+        Check("a user's tool brings its profile everywhere", userReadCode == 0 && userReadText.Contains("\"word\": \"hi\""), userReadText.Trim());
         var (anywhereCode, anywhereText) = Larva(Path.Combine(root, "elsewhere"), "greet", "x");
         Check("a user's tool runs from any folder", anywhereCode == 1 && anywhereText.Contains("greet [x]"), $"exit {anywhereCode}: {anywhereText.Trim()}");
         var (builtinCode, _) = Larva(root, "tool", "run", "build");

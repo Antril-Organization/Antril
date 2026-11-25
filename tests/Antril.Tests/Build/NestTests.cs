@@ -237,4 +237,53 @@ public sealed class NestTests : CheckedTest
         var (_, again) = RunShop();
         Check("and Migrate applies it again, the rows kept", again.Contains("applied 1") && again.Contains("row 3 Ana") && again.Contains("row 1 Ana"), again.Trim());
     }
+
+    /// <summary>
+    /// `nest.queen`, read with Nest's own profile (here from the repository's tool/profiles, as an installed tool brings
+    /// it): its model and its migrations folder, and its errors ending the command.
+    /// </summary>
+    [Fact]
+    public void Nest_queen_names_the_model_and_the_migrations_folder()
+    {
+        string sqlite = Path.Combine(Environment.SystemDirectory, "winsqlite3.dll");
+        Assert.SkipUnless(OperatingSystem.IsWindows() && File.Exists(sqlite) && Directory.Exists(Path.Combine(NestRepository, "tool", "profiles")),
+            "needs the Nest repository (with its profile) next to this one and the system's SQLite (winsqlite3.dll)");
+        string root = TestEnvironment.TempFolder("nest-settings");
+        string larvaExe = Path.ChangeExtension(Repositories.LarvaCli, ".exe");
+        string nestDll = Path.Combine(root, "Nest.dll");
+        var (libCode, libText) = LarvaCommand.Run(["lib", "-o", nestDll, .. Directory.GetFiles(Path.Combine(NestRepository, "src"), "*.ant")]);
+        string tool = Path.Combine(root, "tool", "nest.exe");
+        var (toolCode, toolText) = LarvaCommand.Run("build", "--backend", "x64", "-o", tool, Path.Combine(NestRepository, "tool", "project.queen"));
+        Check("Nest and its tool build", libCode == 0 && toolCode == 0, libText.Trim() + "\n" + toolText.Trim());
+        if (libCode != 0 || toolCode != 0)
+            return;
+
+        string shop = Path.Combine(root, "shop");
+        Directory.CreateDirectory(Path.Combine(shop, "native"));
+        Directory.CreateDirectory(Path.Combine(shop, "src"));
+        File.Copy(sqlite, Path.Combine(shop, "native", "sqlite3.dll"));
+        string queen = Path.Combine(shop, "project.queen");
+        File.WriteAllText(queen, $"queen 1.0;\n\nchunk PROJ:\n   name: Shop\n\nchunk DEPS:\n   assembly: \"{nestDll.Replace('\\', '/')}\",\n   lib: native/sqlite3.dll\n");
+        // Two models: nest.queen says which.
+        File.WriteAllText(Path.Combine(shop, "src", "Data.ant"), Data + "\ninto namespace ShopApp\n{\n    public class Archive : Database, IModel<Archive>\n    {\n        public:\n            Table<User> Users;\n            new(str path) : base(SqliteConnection.Open(path)) { OpenTables(Connection); }\n    }\n}\n");
+        File.WriteAllText(Path.Combine(shop, "src", "Main.ant"), Main);
+        var environment = new Dictionary<string, string>
+        {
+            ["LARVA_EXE"] = larvaExe,
+            ["LARVA_PROJECT"] = queen,
+            ["LARVA_PROFILES"] = Path.Combine(NestRepository, "tool", "profiles"),
+        };
+        (int Code, string Output) Nest(params string[] arguments) => Execute(tool, shop, environment, arguments);
+
+        var (twoCode, twoText) = Nest("model");
+        Check("without nest.queen, two models need choosing", twoCode != 0 && twoText.Contains("more than one IModel"), twoText.Trim());
+        File.WriteAllText(Path.Combine(shop, "nest.queen"), "queen 1.0;\n\nchunk NEST:\n   model: ShopApp.ShopDb,\n   migrations: data/migrations\n");
+        var (addCode, addText) = Nest("migrate", "add", "Init");
+        Check("nest.queen: its model (with its namespace) and its migrations folder", addCode == 0 && File.Exists(Path.Combine(shop, "data", "migrations", "M0001_Init.ant"))
+            && !Directory.Exists(Path.Combine(shop, "migrations")), addText.Trim());
+
+        File.WriteAllText(Path.Combine(shop, "nest.queen"), "queen 1.0;\n\nchunk NEST:\n   migrations: C:/elsewhere,\n   table: users\n");
+        var (badCode, badText) = Nest("model");
+        Check("nest.queen with an error ends the command, saying where (QN124 on an absolute path)", badCode == 1 && badText.Contains("nest.queen has errors") && badText.Contains("QN124"), badText.Trim());
+    }
 }
