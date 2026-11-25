@@ -4377,6 +4377,7 @@ public sealed unsafe class CoreLibraryTests : CheckedTest
             ("class P { } F() : i32 { Dictionary<P, i32> m = new Dictionary<P, i32>(); return m.Count; }", "AN2094", "a type argument that does not implement the constraint"),
             ("class F { public: str name; i32 n; } G() : i32 => new F().n;", "AN2150", "a field that is never null with no start and no constructor"),
             ("class F { public: str name; new(i32 n) { } }", "AN2150", "a field that is never null a constructor leaves unset"),
+            ("class F { public: str name; new() { Init(); } Init() { name = \"x\"; } }", "", "a field a method the constructor calls may set (`this` goes to code the check does not read: Nest's OpenTables)"),
             ("class F { public: str name; new(str n) { if (n.Length > 0) name = n; else name = \"\"; } new() : (\"x\") { } }", "", "a field set by a constructor (on its paths), or by the one it delegates to"),
             ("F() : i32 { str d = default(str); return d.Length; }", "AN2151", "`default` of a type that is never null"),
             ("F() : bool { str? d = default(str?); return d == null; }", "", "`default` of a nullable type"),

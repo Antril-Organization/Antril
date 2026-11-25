@@ -1094,6 +1094,14 @@ namespace Antril.Binding
             return (external.GetValueOrDefault(reference.Parent), reference.Name, -1);
         }
 
+        /// <summary>Whether a method token names a constructor (of this assembly or a referenced one).</summary>
+        internal bool IsConstructor(H.MemberToken token)
+        {
+            var (type, name, index) = MemberOf(token);
+            return name is not null ? name == ".new"
+                : type is not null && index >= 0 && index < type.Definition.Methods.Count && type.Definition.Methods[index].Kind == H.MethodKind.Constructor;
+        }
+
         /// <summary>The field a token names (of this assembly or a referenced one).</summary>
         internal FieldSymbol? FieldOf(H.MemberToken token)
         {

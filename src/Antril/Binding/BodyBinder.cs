@@ -348,8 +348,12 @@ namespace Antril.Binding
             }
             if (unset is null)
                 return;
-            var walker = new FieldsSet();
+            var walker = new FieldsSet(binder);
             walker.Visit(body);
+            // `this` given to code the check does not read (a method of its own, `OpenTables(connection)`, an argument, a
+            // lambda): what that sets is not known here, so nothing is reported.
+            if (walker.Escapes)
+                return;
             foreach (var field in unset)
             {
                 if (walker.Set.Contains(field.Token))
@@ -360,21 +364,35 @@ namespace Antril.Binding
             }
         }
 
-        /// <summary>The fields of <c>this</c> a body assigns (or lends as <c>&amp;mut</c>).</summary>
-        private sealed class FieldsSet : H.HirWalker
+        /// <summary>
+        /// The fields of <c>this</c> a body assigns (or lends as <c>&amp;mut</c>), and whether <c>this</c> goes anywhere
+        /// else than its fields and the constructor it runs first (a method's receiver, an argument, a lambda).
+        /// </summary>
+        private sealed class FieldsSet(Binder binder) : H.HirWalker
         {
             public readonly HashSet<H.MemberToken> Set = [];
+            public bool Escapes { get; private set; }
 
             public override void Visit(H.Expr? e)
             {
                 switch (e)
                 {
-                    case H.AssignExpr { Target: H.FieldExpr { Instance: H.ThisExpr, Field: var assigned } }:
+                    case H.AssignExpr { Target: H.FieldExpr { Instance: H.ThisExpr, Field: var assigned } } assign:
                         Set.Add(assigned);
-                        break;
+                        Visit(assign.Value);
+                        return;
                     case H.AddressOfExpr { Place: H.FieldExpr { Instance: H.ThisExpr, Field: var lent } }:
                         Set.Add(lent);
-                        break;
+                        return;
+                    case H.FieldExpr { Instance: H.ThisExpr }:
+                        return; // reading a field
+                    case H.CallExpr { Receiver: H.ThisExpr } call when binder.IsConstructor(call.Method):
+                        foreach (var argument in call.Arguments)
+                            Visit(argument); // the base's or the delegated constructor
+                        return;
+                    case H.ThisExpr:
+                        Escapes = true;
+                        return;
                 }
                 base.Visit(e);
             }
